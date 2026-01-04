@@ -2,9 +2,6 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <script src="lib/react.min.js"></script>
-  <script src="lib/react-dom.min.js"></script>
-  <script src="lib/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -12,225 +9,45 @@
       background: #1a1a2e;
       color: #eee;
       height: 100vh;
-    }
-    #root { height: 100%; }
-    .app {
       display: flex;
       flex-direction: column;
-      height: 100%;
     }
-    header {
-      padding: 16px;
-      border-bottom: 1px solid #333;
-    }
-    h1 {
-      font-size: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .version {
-      font-size: 11px;
-      color: #888;
-      font-weight: normal;
-    }
-    .status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 8px;
-      font-size: 12px;
-    }
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #ef4444;
-    }
-    .dot.connected { background: #22c55e; }
-    .current-page {
-      padding: 12px 16px;
-      background: #16213e;
-      border-bottom: 1px solid #333;
-      font-size: 12px;
-    }
-    .current-page .url {
-      color: #888;
-      word-break: break-all;
-      margin-top: 4px;
-      font-size: 11px;
-    }
-    .log-container {
-      flex: 1;
-      overflow-y: auto;
-      padding: 8px;
-    }
-    .log-entry {
-      font-family: monospace;
-      font-size: 11px;
-      padding: 6px 8px;
-      margin-bottom: 4px;
-      background: #0f0f23;
-      border-radius: 4px;
-      word-break: break-all;
-    }
-    .log-entry.command { border-left: 3px solid #4f46e5; }
-    .log-entry.response { border-left: 3px solid #22c55e; }
-    .log-entry .time { color: #666; margin-right: 8px; }
-    .actions {
-      padding: 12px;
-      border-top: 1px solid #333;
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-    }
-    button {
-      padding: 8px;
-      border: none;
-      border-radius: 6px;
-      background: #374151;
-      color: white;
-      cursor: pointer;
-      font-size: 11px;
-    }
+    header { padding: 16px; border-bottom: 1px solid #333; }
+    h1 { font-size: 16px; display: flex; justify-content: space-between; }
+    .version { font-size: 11px; color: #888; font-weight: normal; }
+    .status { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+    .dot.on { background: #22c55e; }
+    .page { padding: 12px 16px; background: #16213e; border-bottom: 1px solid #333; font-size: 12px; }
+    .page .url { color: #666; word-break: break-all; margin-top: 4px; font-size: 11px; }
+    .logs { flex: 1; overflow-y: auto; padding: 8px; }
+    .log { font-family: monospace; font-size: 11px; padding: 6px 8px; margin-bottom: 4px; background: #0f0f23; border-radius: 4px; word-break: break-all; }
+    .log.cmd { border-left: 3px solid #4f46e5; }
+    .log.res { border-left: 3px solid #22c55e; }
+    .log .t { color: #666; margin-right: 8px; }
+    .btns { padding: 12px; border-top: 1px solid #333; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    button { padding: 8px; border: none; border-radius: 6px; background: #374151; color: white; cursor: pointer; font-size: 11px; }
     button:hover { background: #4b5563; }
-    button.primary { background: #4f46e5; }
-    button.primary:hover { background: #4338ca; }
-    footer {
-      padding: 8px 16px;
-      border-top: 1px solid #333;
-      font-size: 10px;
-      color: #666;
-    }
+    button.p { background: #4f46e5; }
+    footer { padding: 8px 16px; border-top: 1px solid #333; font-size: 10px; color: #666; }
   </style>
 </head>
 <body>
-  <div id="root"></div>
-
-  <script type="text/babel">
-    const { useState, useEffect } = React;
-
-    function App() {
-      const [connected, setConnected] = useState(false);
-      const [pageTitle, setPageTitle] = useState('Loading...');
-      const [pageUrl, setPageUrl] = useState('');
-      const [logs, setLogs] = useState([]);
-      const [version, setVersion] = useState('');
-
-      // Get version
-      useEffect(() => {
-        const manifest = chrome.runtime.getManifest();
-        setVersion('v' + manifest.version);
-      }, []);
-
-      // Check connection status
-      useEffect(() => {
-        const checkStatus = async () => {
-          try {
-            const data = await chrome.storage.local.get('mqttConnected');
-            setConnected(data.mqttConnected || false);
-          } catch (e) {
-            console.error('Status check error:', e);
-          }
-        };
-
-        checkStatus();
-        const interval = setInterval(checkStatus, 2000);
-        return () => clearInterval(interval);
-      }, []);
-
-      // Update current page
-      useEffect(() => {
-        const updatePage = async () => {
-          try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (tab) {
-              setPageTitle(tab.title || 'Unknown');
-              setPageUrl(tab.url || '');
-            }
-          } catch (e) {
-            console.error('Page update error:', e);
-          }
-        };
-
-        updatePage();
-        const interval = setInterval(updatePage, 3000);
-        return () => clearInterval(interval);
-      }, []);
-
-      // Add log entry
-      const addLog = (type, message) => {
-        const time = new Date().toLocaleTimeString();
-        const text = typeof message === 'object' ? JSON.stringify(message) : message;
-        setLogs(prev => [...prev.slice(-50), { type, time, text }]);
-      };
-
-      // Send command
-      const sendCommand = async (action) => {
-        const id = 'panel_' + Date.now();
-        addLog('command', { action, id });
-
-        try {
-          const response = await chrome.runtime.sendMessage({
-            action: 'command',
-            command: { action, id }
-          });
-          addLog('response', response || 'sent');
-        } catch (e) {
-          addLog('response', 'Error: ' + e.message);
-        }
-      };
-
-      // Clear logs
-      const clearLogs = () => setLogs([]);
-
-      // Initial log
-      useEffect(() => {
-        addLog('response', 'Side panel ready ' + version);
-      }, [version]);
-
-      return (
-        <div className="app">
-          <header>
-            <h1>
-              Claude Browser Proxy
-              <span className="version">{version}</span>
-            </h1>
-            <div className="status">
-              <div className={`dot ${connected ? 'connected' : ''}`}></div>
-              <span>{connected ? 'Connected to MQTT' : 'Disconnected'}</span>
-            </div>
-          </header>
-
-          <div className="current-page">
-            <strong>{pageTitle}</strong>
-            <div className="url">{pageUrl}</div>
-          </div>
-
-          <div className="log-container">
-            {logs.map((log, i) => (
-              <div key={i} className={`log-entry ${log.type}`}>
-                <span className="time">{log.time}</span>
-                {log.text}
-              </div>
-            ))}
-          </div>
-
-          <div className="actions">
-            <button onClick={() => sendCommand('get_url')}>Get URL</button>
-            <button onClick={() => sendCommand('get_text')}>Get Text</button>
-            <button onClick={() => sendCommand('get_html')}>Get HTML</button>
-            <button onClick={() => sendCommand('get_videos')}>Videos</button>
-            <button onClick={() => sendCommand('screenshot')}>Screenshot</button>
-            <button className="primary" onClick={clearLogs}>Clear</button>
-          </div>
-
-          <footer>ws://localhost:9001</footer>
-        </div>
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-  </script>
+  <header>
+    <h1>Claude Browser Proxy <span class="version" id="v"></span></h1>
+    <div class="status"><div class="dot" id="d"></div><span id="s">Checking...</span></div>
+  </header>
+  <div class="page"><strong id="pt">Loading...</strong><div class="url" id="pu"></div></div>
+  <div class="logs" id="l"></div>
+  <div class="btns">
+    <button id="b1">Get URL</button>
+    <button id="b2">Get Text</button>
+    <button id="b3">Get HTML</button>
+    <button id="b4">Videos</button>
+    <button id="b5">Screenshot</button>
+    <button id="b6" class="p">Clear</button>
+  </div>
+  <footer>ws://localhost:9001</footer>
+  <script src="sidepanel.js"></script>
 </body>
 </html>
