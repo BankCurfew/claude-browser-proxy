@@ -365,7 +365,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
 
 // Start
-console.log('[Claude Browser Proxy] v1.0.3 Starting...');
+console.log('[Claude Browser Proxy] v1.0.4 Starting...');
 console.log('[Claude Browser Proxy] Connecting to:', MQTT_WS_URL);
 try {
   connect();

@@ -143,10 +143,14 @@
 
     // Update status
     async function updateStatus() {
-      const text = await chrome.action.getBadgeText({});
-      const connected = text === 'ON';
-      statusDot.classList.toggle('connected', connected);
-      statusText.textContent = connected ? 'Connected to MQTT' : 'Disconnected';
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'status' });
+        const connected = response?.connected || false;
+        statusDot.classList.toggle('connected', connected);
+        statusText.textContent = connected ? 'Connected to MQTT' : 'Disconnected';
+      } catch (e) {
+        statusText.textContent = 'Error: ' + e.message;
+      }
     }
 
     // Update current page
