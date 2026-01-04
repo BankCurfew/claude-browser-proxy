@@ -4,369 +4,350 @@
 const MQTT_WS_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
-  response: 'claude/browser/response',
-  context: 'claude/browser/context'
+  response: 'claude/browser/response'
 };
 
-let mqttClient = null;
+let ws = null;
 let isConnected = false;
-let reconnectTimer = null;
+let messageId = 1;
 
-// Simple MQTT over WebSocket implementation
-class SimpleMQTT {
-  constructor(url) {
-    this.url = url;
-    this.ws = null;
-    this.messageId = 1;
-    this.subscriptions = new Map();
-    this.onMessage = null;
-    this.onConnect = null;
-    this.onDisconnect = null;
+// Encode remaining length (MQTT variable byte integer)
+function encodeRemainingLength(length) {
+  const bytes = [];
+  do {
+    let byte = length % 128;
+    length = Math.floor(length / 128);
+    if (length > 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (length > 0);
+  return bytes;
+}
+
+// Create MQTT CONNECT packet
+function createConnectPacket() {
+  const clientId = 'claude-browser-' + Date.now();
+  const clientIdBytes = new TextEncoder().encode(clientId);
+
+  const variableHeader = [
+    0x00, 0x04, // Protocol name length
+    0x4D, 0x51, 0x54, 0x54, // "MQTT"
+    0x04, // Protocol level (4 = 3.1.1)
+    0x02, // Connect flags (clean session)
+    0x00, 0x3C // Keep alive (60 seconds)
+  ];
+
+  const payload = [
+    (clientIdBytes.length >> 8) & 0xFF,
+    clientIdBytes.length & 0xFF,
+    ...clientIdBytes
+  ];
+
+  const remainingLength = variableHeader.length + payload.length;
+
+  return new Uint8Array([
+    0x10, // CONNECT packet type
+    ...encodeRemainingLength(remainingLength),
+    ...variableHeader,
+    ...payload
+  ]);
+}
+
+// Create MQTT SUBSCRIBE packet
+function createSubscribePacket(topic) {
+  const topicBytes = new TextEncoder().encode(topic);
+  const msgId = messageId++;
+
+  const variableHeader = [
+    (msgId >> 8) & 0xFF,
+    msgId & 0xFF
+  ];
+
+  const payload = [
+    (topicBytes.length >> 8) & 0xFF,
+    topicBytes.length & 0xFF,
+    ...topicBytes,
+    0x00 // QoS 0
+  ];
+
+  const remainingLength = variableHeader.length + payload.length;
+
+  return new Uint8Array([
+    0x82, // SUBSCRIBE packet type
+    ...encodeRemainingLength(remainingLength),
+    ...variableHeader,
+    ...payload
+  ]);
+}
+
+// Create MQTT PUBLISH packet
+function createPublishPacket(topic, message) {
+  const topicBytes = new TextEncoder().encode(topic);
+  const payloadBytes = new TextEncoder().encode(
+    typeof message === 'string' ? message : JSON.stringify(message)
+  );
+
+  const variableHeader = [
+    (topicBytes.length >> 8) & 0xFF,
+    topicBytes.length & 0xFF,
+    ...topicBytes
+  ];
+
+  const remainingLength = variableHeader.length + payloadBytes.length;
+
+  return new Uint8Array([
+    0x30, // PUBLISH packet type (QoS 0)
+    ...encodeRemainingLength(remainingLength),
+    ...variableHeader,
+    ...payloadBytes
+  ]);
+}
+
+// Parse incoming MQTT packet
+function parsePacket(data) {
+  const type = (data[0] & 0xF0) >> 4;
+  let offset = 1;
+
+  // Decode remaining length
+  let remainingLength = 0;
+  let multiplier = 1;
+  let byte;
+  do {
+    byte = data[offset++];
+    remainingLength += (byte & 0x7F) * multiplier;
+    multiplier *= 128;
+  } while (byte & 0x80);
+
+  return { type, offset, remainingLength, data };
+}
+
+// Handle incoming PUBLISH
+function handlePublish(packet) {
+  let offset = packet.offset;
+
+  // Topic length
+  const topicLength = (packet.data[offset] << 8) | packet.data[offset + 1];
+  offset += 2;
+
+  // Topic
+  const topic = new TextDecoder().decode(
+    packet.data.slice(offset, offset + topicLength)
+  );
+  offset += topicLength;
+
+  // Payload
+  const payload = new TextDecoder().decode(
+    packet.data.slice(offset, offset + packet.remainingLength - topicLength - 2)
+  );
+
+  console.log('[MQTT] Received:', topic, payload);
+
+  try {
+    handleCommand(topic, JSON.parse(payload));
+  } catch (e) {
+    handleCommand(topic, payload);
   }
+}
 
-  connect() {
-    return new Promise((resolve, reject) => {
-      try {
-        this.ws = new WebSocket(this.url, 'mqtt');
-        this.ws.binaryType = 'arraybuffer';
+// Connect to MQTT broker
+function connect() {
+  console.log('[MQTT] Connecting to', MQTT_WS_URL);
 
-        this.ws.onopen = () => {
-          console.log('[MQTT] WebSocket connected');
-          this.sendConnect();
-        };
+  ws = new WebSocket(MQTT_WS_URL, 'mqtt');
+  ws.binaryType = 'arraybuffer';
 
-        this.ws.onmessage = (event) => {
-          this.handleMessage(new Uint8Array(event.data));
-        };
+  ws.onopen = () => {
+    console.log('[MQTT] WebSocket open, sending CONNECT');
+    ws.send(createConnectPacket());
+  };
 
-        this.ws.onclose = () => {
-          console.log('[MQTT] WebSocket closed');
-          if (this.onDisconnect) this.onDisconnect();
-        };
+  ws.onmessage = (event) => {
+    const packet = parsePacket(new Uint8Array(event.data));
 
-        this.ws.onerror = (err) => {
-          console.error('[MQTT] WebSocket error:', err);
-          reject(err);
-        };
-
-        // Resolve after CONNACK
-        this._connectResolve = resolve;
-        this._connectReject = reject;
-      } catch (err) {
-        reject(err);
-      }
-    });
-  }
-
-  sendConnect() {
-    // MQTT CONNECT packet
-    const clientId = 'claude-browser-' + Math.random().toString(36).substr(2, 9);
-    const clientIdBytes = new TextEncoder().encode(clientId);
-
-    const packet = new Uint8Array([
-      0x10, // CONNECT
-      12 + clientIdBytes.length, // Remaining length
-      0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // Protocol name "MQTT"
-      0x04, // Protocol level (4 = MQTT 3.1.1)
-      0x02, // Connect flags (clean session)
-      0x00, 0x3C, // Keep alive (60 seconds)
-      0x00, clientIdBytes.length, // Client ID length
-      ...clientIdBytes
-    ]);
-
-    this.ws.send(packet);
-  }
-
-  handleMessage(data) {
-    const type = (data[0] & 0xF0) >> 4;
-
-    switch (type) {
+    switch (packet.type) {
       case 2: // CONNACK
-        console.log('[MQTT] Connected to broker');
+        console.log('[MQTT] Connected!');
         isConnected = true;
-        if (this.onConnect) this.onConnect();
-        if (this._connectResolve) this._connectResolve();
+        updateBadge(true);
+        // Subscribe to command topic
+        ws.send(createSubscribePacket(TOPICS.command));
         break;
 
       case 3: // PUBLISH
-        this.handlePublish(data);
+        handlePublish(packet);
         break;
 
       case 9: // SUBACK
-        console.log('[MQTT] Subscribed');
+        console.log('[MQTT] Subscribed to', TOPICS.command);
+        break;
+
+      case 13: // PINGRESP
+        console.log('[MQTT] Ping OK');
         break;
     }
-  }
+  };
 
-  handlePublish(data) {
-    let offset = 1;
-    let remainingLength = data[offset++];
+  ws.onclose = () => {
+    console.log('[MQTT] Disconnected');
+    isConnected = false;
+    updateBadge(false);
+    setTimeout(connect, 5000);
+  };
 
-    // Topic length
-    const topicLength = (data[offset] << 8) | data[offset + 1];
-    offset += 2;
+  ws.onerror = (err) => {
+    console.error('[MQTT] Error:', err);
+  };
+}
 
-    // Topic
-    const topic = new TextDecoder().decode(data.slice(offset, offset + topicLength));
-    offset += topicLength;
-
-    // Payload
-    const payload = new TextDecoder().decode(data.slice(offset));
-
-    console.log('[MQTT] Received:', topic, payload);
-
-    if (this.onMessage) {
-      try {
-        this.onMessage(topic, JSON.parse(payload));
-      } catch (e) {
-        this.onMessage(topic, payload);
-      }
-    }
-  }
-
-  subscribe(topic) {
-    const topicBytes = new TextEncoder().encode(topic);
-    const msgId = this.messageId++;
-
-    const packet = new Uint8Array([
-      0x82, // SUBSCRIBE
-      5 + topicBytes.length, // Remaining length
-      (msgId >> 8) & 0xFF, msgId & 0xFF, // Message ID
-      0x00, topicBytes.length, // Topic length
-      ...topicBytes,
-      0x00 // QoS 0
-    ]);
-
-    this.ws.send(packet);
-    console.log('[MQTT] Subscribing to:', topic);
-  }
-
-  publish(topic, message) {
-    const topicBytes = new TextEncoder().encode(topic);
-    const payload = typeof message === 'string' ? message : JSON.stringify(message);
-    const payloadBytes = new TextEncoder().encode(payload);
-
-    const packet = new Uint8Array([
-      0x30, // PUBLISH (QoS 0)
-      2 + topicBytes.length + payloadBytes.length,
-      0x00, topicBytes.length,
-      ...topicBytes,
-      ...payloadBytes
-    ]);
-
-    this.ws.send(packet);
-    console.log('[MQTT] Published to:', topic);
-  }
-
-  disconnect() {
-    if (this.ws) {
-      this.ws.send(new Uint8Array([0xE0, 0x00])); // DISCONNECT
-      this.ws.close();
-    }
+// Publish message
+function publish(topic, message) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(createPublishPacket(topic, message));
+    console.log('[MQTT] Published to', topic);
   }
 }
 
-// Connect to MQTT
-async function connectMQTT() {
-  try {
-    mqttClient = new SimpleMQTT(MQTT_WS_URL);
-
-    mqttClient.onConnect = () => {
-      mqttClient.subscribe(TOPICS.command);
-      updateIcon(true);
-    };
-
-    mqttClient.onDisconnect = () => {
-      isConnected = false;
-      updateIcon(false);
-      scheduleReconnect();
-    };
-
-    mqttClient.onMessage = handleCommand;
-
-    await mqttClient.connect();
-    console.log('[Claude Proxy] Connected to MQTT broker');
-  } catch (err) {
-    console.error('[Claude Proxy] Connection failed:', err);
-    scheduleReconnect();
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connectMQTT();
-  }, 5000);
-}
-
-function updateIcon(connected) {
-  // Could update badge here
-  chrome.action.setBadgeText({ text: connected ? 'ON' : 'OFF' });
-  chrome.action.setBadgeBackgroundColor({ color: connected ? '#22c55e' : '#ef4444' });
+// Update extension badge
+function updateBadge(connected) {
+  chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
+  chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
 }
 
 // Handle commands from Claude Code
 async function handleCommand(topic, command) {
-  console.log('[Claude Proxy] Command:', command);
+  console.log('[Claude] Command:', command);
+
+  let result;
 
   try {
-    let result;
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab');
 
     switch (command.action) {
       case 'get_html':
-        result = await executeInTab('getHTML');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => document.documentElement.outerHTML
+        });
+        result = { html: result[0]?.result?.substring(0, 50000) }; // Limit size
         break;
 
       case 'get_text':
-        result = await executeInTab('getText');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => document.body.innerText
+        });
+        result = { text: result[0]?.result };
         break;
 
       case 'get_url':
-        result = await executeInTab('getURL');
-        break;
-
-      case 'get_title':
-        result = await executeInTab('getTitle');
-        break;
-
-      case 'get_selection':
-        result = await executeInTab('getSelection');
-        break;
-
-      case 'get_links':
-        result = await executeInTab('getLinks');
-        break;
-
-      case 'get_images':
-        result = await executeInTab('getImages');
+        result = { url: tab.url, title: tab.title };
         break;
 
       case 'get_videos':
-        result = await executeInTab('getVideos');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const videos = Array.from(document.querySelectorAll('video'));
+            return videos.map(v => ({
+              src: v.src || v.currentSrc,
+              sources: Array.from(v.querySelectorAll('source')).map(s => s.src)
+            }));
+          }
+        });
+        result = { videos: result[0]?.result };
         break;
 
       case 'click':
-        result = await executeInTab('click', command.selector);
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (sel) => {
+            const el = document.querySelector(sel);
+            if (el) { el.click(); return { success: true }; }
+            return { error: 'Not found' };
+          },
+          args: [command.selector]
+        });
+        result = result[0]?.result;
         break;
 
       case 'type':
-        result = await executeInTab('type', command.selector, command.text);
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (sel, text) => {
+            const el = document.querySelector(sel);
+            if (el) {
+              el.focus();
+              el.value = text;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              return { success: true };
+            }
+            return { error: 'Not found' };
+          },
+          args: [command.selector, command.text]
+        });
+        result = result[0]?.result;
         break;
 
-      case 'scroll':
-        result = await executeInTab('scroll', command.direction, command.amount);
+      case 'find':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (sel) => {
+            const els = document.querySelectorAll(sel);
+            return { count: els.length, found: els.length > 0 };
+          },
+          args: [command.selector]
+        });
+        result = result[0]?.result;
         break;
 
       case 'screenshot':
-        result = await captureScreenshot();
+        const dataUrl = await chrome.tabs.captureVisibleTab();
+        result = { screenshot: dataUrl };
         break;
 
       case 'download':
-        result = await downloadFile(command.url, command.filename);
-        break;
-
-      case 'execute':
-        result = await executeInTab('execute', command.code);
+        const dlId = await chrome.downloads.download({
+          url: command.url,
+          filename: command.filename
+        });
+        result = { downloadId: dlId };
         break;
 
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
-
-    // Send response
-    mqttClient.publish(TOPICS.response, {
-      id: command.id,
-      action: command.action,
-      result: result,
-      timestamp: Date.now()
-    });
-
   } catch (err) {
-    mqttClient.publish(TOPICS.response, {
-      id: command.id,
-      action: command.action,
-      error: err.message,
-      timestamp: Date.now()
-    });
+    result = { error: err.message };
   }
-}
 
-// Execute script in active tab
-async function executeInTab(action, ...args) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) throw new Error('No active tab');
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: contentActions[action],
-    args: args
+  // Send response
+  publish(TOPICS.response, {
+    id: command.id,
+    action: command.action,
+    result: result,
+    timestamp: Date.now()
   });
-
-  return results[0]?.result;
 }
 
-// Content script actions (injected into page)
-const contentActions = {
-  getHTML: () => document.documentElement.outerHTML,
-  getText: () => document.body.innerText,
-  getURL: () => window.location.href,
-  getTitle: () => document.title,
-  getSelection: () => window.getSelection().toString(),
-
-  getLinks: () => Array.from(document.querySelectorAll('a[href]')).map(a => ({
-    href: a.href,
-    text: a.innerText.trim().slice(0, 100)
-  })).slice(0, 100),
-
-  getImages: () => Array.from(document.querySelectorAll('img[src]')).map(img => ({
-    src: img.src,
-    alt: img.alt
-  })).slice(0, 50),
-
-  getVideos: () => Array.from(document.querySelectorAll('video')).map(v => ({
-    src: v.src || v.currentSrc,
-    sources: Array.from(v.querySelectorAll('source')).map(s => s.src)
-  })),
-
-  click: (selector) => {
-    const el = document.querySelector(selector);
-    if (el) { el.click(); return { success: true }; }
-    return { error: 'Element not found' };
-  },
-
-  type: (selector, text) => {
-    const el = document.querySelector(selector);
-    if (el) { el.value = text; el.dispatchEvent(new Event('input')); return { success: true }; }
-    return { error: 'Element not found' };
-  },
-
-  scroll: (direction, amount = 300) => {
-    const dirs = { up: -amount, down: amount, top: -99999, bottom: 99999 };
-    window.scrollBy(0, dirs[direction] || 0);
-    return { success: true };
-  },
-
-  execute: (code) => {
-    try { return eval(code); }
-    catch (e) { return { error: e.message }; }
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'status') {
+    sendResponse({ connected: isConnected });
+  } else if (msg.action === 'reconnect') {
+    if (ws) ws.close();
+    connect();
+    sendResponse({ ok: true });
   }
-};
+  return true;
+});
 
-// Capture screenshot
-async function captureScreenshot() {
-  const dataUrl = await chrome.tabs.captureVisibleTab();
-  return { dataUrl };
-}
+// Start
+console.log('[Claude Browser Proxy] Starting...');
+connect();
 
-// Download file
-async function downloadFile(url, filename) {
-  const id = await chrome.downloads.download({
-    url: url,
-    filename: filename || 'download'
-  });
-  return { downloadId: id };
-}
-
-// Start connection
-connectMQTT();
+// Keep alive ping every 30 seconds
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(new Uint8Array([0xC0, 0x00])); // PINGREQ
+  }
+}, 30000);
