@@ -207,10 +207,12 @@ function publish(topic, message) {
   }
 }
 
-// Update extension badge
+// Update extension badge and storage
 function updateBadge(connected) {
   chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
+  // Also save to storage for sidepanel
+  chrome.storage.local.set({ mqttConnected: connected });
 }
 
 // Handle commands from Claude Code

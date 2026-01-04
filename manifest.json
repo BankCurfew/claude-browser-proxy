@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Claude Browser Proxy",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Bridge between Claude Code and your browser via MQTT",
   "permissions": [
     "activeTab",
     "scripting",
     "downloads",
-    "sidePanel"
+    "sidePanel",
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"

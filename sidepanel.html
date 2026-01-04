@@ -140,17 +140,14 @@
     // Show version
     document.getElementById('version').textContent = 'v' + chrome.runtime.getManifest().version;
 
-    // Update status
+    // Update status from storage
     async function updateStatus() {
       try {
-        console.log('[SidePanel] Checking status...');
-        const response = await chrome.runtime.sendMessage({ action: 'status' });
-        console.log('[SidePanel] Status response:', response);
-        const connected = response?.connected || false;
+        const data = await chrome.storage.local.get('mqttConnected');
+        const connected = data.mqttConnected || false;
         statusDot.classList.toggle('connected', connected);
         statusText.textContent = connected ? 'Connected to MQTT' : 'Disconnected';
       } catch (e) {
-        console.error('[SidePanel] Status error:', e);
         statusText.textContent = 'Error: ' + e.message;
       }
     }
