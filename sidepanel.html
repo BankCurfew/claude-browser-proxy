@@ -2,6 +2,9 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -9,8 +12,12 @@
       background: #1a1a2e;
       color: #eee;
       height: 100vh;
+    }
+    #root { height: 100%; }
+    .app {
       display: flex;
       flex-direction: column;
+      height: 100%;
     }
     header {
       padding: 16px;
@@ -20,7 +27,12 @@
       font-size: 16px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
+    }
+    .version {
+      font-size: 11px;
+      color: #888;
+      font-weight: normal;
     }
     .status {
       display: flex;
@@ -36,7 +48,6 @@
       background: #ef4444;
     }
     .dot.connected { background: #22c55e; }
-
     .current-page {
       padding: 12px 16px;
       background: #16213e;
@@ -47,8 +58,8 @@
       color: #888;
       word-break: break-all;
       margin-top: 4px;
+      font-size: 11px;
     }
-
     .log-container {
       flex: 1;
       overflow-y: auto;
@@ -65,12 +76,7 @@
     }
     .log-entry.command { border-left: 3px solid #4f46e5; }
     .log-entry.response { border-left: 3px solid #22c55e; }
-    .log-entry.error { border-left: 3px solid #ef4444; }
-    .log-entry .time {
-      color: #666;
-      margin-right: 8px;
-    }
-
+    .log-entry .time { color: #666; margin-right: 8px; }
     .actions {
       padding: 12px;
       border-top: 1px solid #333;
@@ -90,121 +96,141 @@
     button:hover { background: #4b5563; }
     button.primary { background: #4f46e5; }
     button.primary:hover { background: #4338ca; }
-
     footer {
       padding: 8px 16px;
       border-top: 1px solid #333;
       font-size: 10px;
       color: #666;
-      display: flex;
-      justify-content: space-between;
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Claude Browser Proxy <span id="version" style="font-size:11px;color:#666;font-weight:normal"></span></h1>
-    <div class="status">
-      <div class="dot" id="statusDot"></div>
-      <span id="statusText">Connecting...</span>
-    </div>
-  </header>
+  <div id="root"></div>
 
-  <div class="current-page">
-    <strong id="pageTitle">Loading...</strong>
-    <div class="url" id="pageUrl"></div>
-  </div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
 
-  <div class="log-container" id="logContainer">
-    <!-- Logs will appear here -->
-  </div>
+    function App() {
+      const [connected, setConnected] = useState(false);
+      const [pageTitle, setPageTitle] = useState('Loading...');
+      const [pageUrl, setPageUrl] = useState('');
+      const [logs, setLogs] = useState([]);
+      const [version, setVersion] = useState('');
 
-  <div class="actions">
-    <button onclick="sendCommand('get_url')">Get URL</button>
-    <button onclick="sendCommand('get_text')">Get Text</button>
-    <button onclick="sendCommand('get_html')">Get HTML</button>
-    <button onclick="sendCommand('get_videos')">Videos</button>
-    <button onclick="sendCommand('screenshot')">Screenshot</button>
-    <button class="primary" onclick="clearLog()">Clear</button>
-  </div>
+      // Get version
+      useEffect(() => {
+        const manifest = chrome.runtime.getManifest();
+        setVersion('v' + manifest.version);
+      }, []);
 
-  <footer>
-    <span>ws://localhost:9001</span>
-  </footer>
+      // Check connection status
+      useEffect(() => {
+        const checkStatus = async () => {
+          try {
+            const data = await chrome.storage.local.get('mqttConnected');
+            setConnected(data.mqttConnected || false);
+          } catch (e) {
+            console.error('Status check error:', e);
+          }
+        };
 
-  <script>
-    const logContainer = document.getElementById('logContainer');
-    const statusDot = document.getElementById('statusDot');
-    const statusText = document.getElementById('statusText');
+        checkStatus();
+        const interval = setInterval(checkStatus, 2000);
+        return () => clearInterval(interval);
+      }, []);
 
-    // Show version
-    document.getElementById('version').textContent = 'v' + chrome.runtime.getManifest().version;
+      // Update current page
+      useEffect(() => {
+        const updatePage = async () => {
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab) {
+              setPageTitle(tab.title || 'Unknown');
+              setPageUrl(tab.url || '');
+            }
+          } catch (e) {
+            console.error('Page update error:', e);
+          }
+        };
 
-    // Update status from storage
-    async function updateStatus() {
-      try {
-        const data = await chrome.storage.local.get('mqttConnected');
-        const connected = data.mqttConnected || false;
-        statusDot.classList.toggle('connected', connected);
-        statusText.textContent = connected ? 'Connected to MQTT' : 'Disconnected';
-      } catch (e) {
-        statusText.textContent = 'Error: ' + e.message;
-      }
+        updatePage();
+        const interval = setInterval(updatePage, 3000);
+        return () => clearInterval(interval);
+      }, []);
+
+      // Add log entry
+      const addLog = (type, message) => {
+        const time = new Date().toLocaleTimeString();
+        const text = typeof message === 'object' ? JSON.stringify(message) : message;
+        setLogs(prev => [...prev.slice(-50), { type, time, text }]);
+      };
+
+      // Send command
+      const sendCommand = async (action) => {
+        const id = 'panel_' + Date.now();
+        addLog('command', { action, id });
+
+        try {
+          const response = await chrome.runtime.sendMessage({
+            action: 'command',
+            command: { action, id }
+          });
+          addLog('response', response || 'sent');
+        } catch (e) {
+          addLog('response', 'Error: ' + e.message);
+        }
+      };
+
+      // Clear logs
+      const clearLogs = () => setLogs([]);
+
+      // Initial log
+      useEffect(() => {
+        addLog('response', 'Side panel ready ' + version);
+      }, [version]);
+
+      return (
+        <div className="app">
+          <header>
+            <h1>
+              Claude Browser Proxy
+              <span className="version">{version}</span>
+            </h1>
+            <div className="status">
+              <div className={`dot ${connected ? 'connected' : ''}`}></div>
+              <span>{connected ? 'Connected to MQTT' : 'Disconnected'}</span>
+            </div>
+          </header>
+
+          <div className="current-page">
+            <strong>{pageTitle}</strong>
+            <div className="url">{pageUrl}</div>
+          </div>
+
+          <div className="log-container">
+            {logs.map((log, i) => (
+              <div key={i} className={`log-entry ${log.type}`}>
+                <span className="time">{log.time}</span>
+                {log.text}
+              </div>
+            ))}
+          </div>
+
+          <div className="actions">
+            <button onClick={() => sendCommand('get_url')}>Get URL</button>
+            <button onClick={() => sendCommand('get_text')}>Get Text</button>
+            <button onClick={() => sendCommand('get_html')}>Get HTML</button>
+            <button onClick={() => sendCommand('get_videos')}>Videos</button>
+            <button onClick={() => sendCommand('screenshot')}>Screenshot</button>
+            <button className="primary" onClick={clearLogs}>Clear</button>
+          </div>
+
+          <footer>ws://localhost:9001</footer>
+        </div>
+      );
     }
 
-    // Update current page
-    async function updateCurrentPage() {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab) {
-        document.getElementById('pageTitle').textContent = tab.title || 'Unknown';
-        document.getElementById('pageUrl').textContent = tab.url || '';
-      }
-    }
-
-    // Add log entry
-    function addLog(type, message) {
-      const entry = document.createElement('div');
-      entry.className = 'log-entry ' + type;
-      const time = new Date().toLocaleTimeString();
-      entry.innerHTML = '<span class="time">' + time + '</span>' +
-        (typeof message === 'object' ? JSON.stringify(message, null, 2) : message);
-      logContainer.appendChild(entry);
-      logContainer.scrollTop = logContainer.scrollHeight;
-    }
-
-    // Send command via background
-    function sendCommand(action) {
-      const id = 'panel_' + Date.now();
-      addLog('command', { action, id });
-
-      // Send to background which will publish to MQTT
-      chrome.runtime.sendMessage({
-        action: 'command',
-        command: { action, id }
-      });
-    }
-
-    function clearLog() {
-      logContainer.innerHTML = '';
-    }
-
-    // Listen for messages from background
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.type === 'mqtt_message') {
-        addLog('response', msg.data);
-      } else if (msg.type === 'mqtt_status') {
-        updateStatus();
-      }
-    });
-
-    // Initial updates
-    console.log('[SidePanel] Initializing...');
-    updateStatus();
-    updateCurrentPage();
-    setInterval(updateStatus, 2000);
-    setInterval(updateCurrentPage, 3000);
-
-    addLog('response', 'Side panel ready v1.0.6');
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
