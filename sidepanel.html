@@ -143,11 +143,14 @@
     // Update status
     async function updateStatus() {
       try {
+        console.log('[SidePanel] Checking status...');
         const response = await chrome.runtime.sendMessage({ action: 'status' });
+        console.log('[SidePanel] Status response:', response);
         const connected = response?.connected || false;
         statusDot.classList.toggle('connected', connected);
         statusText.textContent = connected ? 'Connected to MQTT' : 'Disconnected';
       } catch (e) {
+        console.error('[SidePanel] Status error:', e);
         statusText.textContent = 'Error: ' + e.message;
       }
     }
@@ -198,12 +201,13 @@
     });
 
     // Initial updates
+    console.log('[SidePanel] Initializing...');
     updateStatus();
     updateCurrentPage();
     setInterval(updateStatus, 2000);
     setInterval(updateCurrentPage, 3000);
 
-    addLog('response', 'Side panel ready. Send commands to test.');
+    addLog('response', 'Side panel ready v1.0.6');
   </script>
 </body>
 </html>
