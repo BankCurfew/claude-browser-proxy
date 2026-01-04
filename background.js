@@ -194,7 +194,8 @@ function connect() {
   };
 
   ws.onerror = (err) => {
-    console.error('[MQTT] Error:', err);
+    console.error('[MQTT] WebSocket Error:', err);
+    console.error('[MQTT] ReadyState:', ws.readyState);
   };
 }
 
@@ -342,8 +343,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // Start
-console.log('[Claude Browser Proxy] Starting...');
-connect();
+console.log('[Claude Browser Proxy] v1.0.2 Starting...');
+console.log('[Claude Browser Proxy] Connecting to:', MQTT_WS_URL);
+try {
+  connect();
+} catch (e) {
+  console.error('[Claude Browser Proxy] Failed to start:', e);
+}
 
 // Keep alive ping every 30 seconds
 setInterval(() => {
