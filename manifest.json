@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Claude Browser Proxy",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Bridge between Claude Code and your browser via MQTT",
   "permissions": [
     "activeTab",
     "scripting",
-    "downloads"
+    "downloads",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -34,5 +35,8 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   }
 }

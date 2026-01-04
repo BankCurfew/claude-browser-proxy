@@ -314,6 +314,21 @@ async function handleCommand(topic, command) {
         result = { downloadId: dlId };
         break;
 
+      case 'execute':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (code) => {
+            try {
+              return eval(code);
+            } catch (e) {
+              return { error: e.message };
+            }
+          },
+          args: [command.code]
+        });
+        result = result[0]?.result;
+        break;
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
@@ -330,7 +345,7 @@ async function handleCommand(topic, command) {
   });
 }
 
-// Listen for messages from popup
+// Listen for messages from popup/sidepanel
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'status') {
     sendResponse({ connected: isConnected });
@@ -338,12 +353,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (ws) ws.close();
     connect();
     sendResponse({ ok: true });
+  } else if (msg.action === 'command') {
+    // Forward command to MQTT
+    publish(TOPICS.command, msg.command);
+    sendResponse({ ok: true });
   }
   return true;
 });
 
+// Enable side panel
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+
 // Start
-console.log('[Claude Browser Proxy] v1.0.2 Starting...');
+console.log('[Claude Browser Proxy] v1.0.3 Starting...');
 console.log('[Claude Browser Proxy] Connecting to:', MQTT_WS_URL);
 try {
   connect();
