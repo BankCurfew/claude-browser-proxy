@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Claude Browser Proxy",
-  "version": "1.2.0",
-  "description": "Bridge between Claude Code and your browser via MQTT",
+  "name": "Gemini Proxy",
+  "version": "1.6.0",
+  "description": "Control Gemini from Claude Code via MQTT",
   "permissions": [
     "activeTab",
     "scripting",
@@ -12,7 +12,7 @@
     "tabs"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://gemini.google.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -20,7 +20,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://gemini.google.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

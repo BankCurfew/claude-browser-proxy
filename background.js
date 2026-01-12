@@ -4,7 +4,9 @@
 const MQTT_WS_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
-  response: 'claude/browser/response'
+  response: 'claude/browser/response',
+  page: 'claude/browser/page',
+  answer: 'claude/browser/answer'
 };
 
 let ws = null;
@@ -79,8 +81,8 @@ function createSubscribePacket(topic) {
   ]);
 }
 
-// Create MQTT PUBLISH packet
-function createPublishPacket(topic, message) {
+// Create MQTT PUBLISH packet (with optional retain flag)
+function createPublishPacket(topic, message, retain = false) {
   const topicBytes = new TextEncoder().encode(topic);
   const payloadBytes = new TextEncoder().encode(
     typeof message === 'string' ? message : JSON.stringify(message)
@@ -93,9 +95,10 @@ function createPublishPacket(topic, message) {
   ];
 
   const remainingLength = variableHeader.length + payloadBytes.length;
+  const flags = retain ? 0x31 : 0x30; // 0x31 = PUBLISH + retain
 
   return new Uint8Array([
-    0x30, // PUBLISH packet type (QoS 0)
+    flags, // PUBLISH packet type (QoS 0, optional retain)
     ...encodeRemainingLength(remainingLength),
     ...variableHeader,
     ...payloadBytes
@@ -199,25 +202,47 @@ function connect() {
   };
 }
 
-// Publish message
-function publish(topic, message) {
+// Publish message (with optional retain)
+function publish(topic, message, retain = false) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(createPublishPacket(topic, message));
-    console.log('[MQTT] Published to', topic);
+    ws.send(createPublishPacket(topic, message, retain));
+    console.log('[MQTT] Published to', topic, retain ? '(retained)' : '');
   }
 }
 
 // Update extension badge and storage
-function updateBadge(connected) {
-  chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
-  chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
-  // Also save to storage for sidepanel
+async function updateBadge(connected) {
+  // Only show badge when on Gemini
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const onGemini = tab?.url?.includes('gemini.google.com');
+    chrome.action.setBadgeText({ text: (connected && onGemini) ? 'ON' : '' });
+    chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
+  } catch (e) {
+    chrome.action.setBadgeText({ text: '' });
+  }
+  // Save to storage for sidepanel
   chrome.storage.local.set({ mqttConnected: connected });
+}
+
+// Broadcast to sidepanel via storage
+async function broadcastLog(type, data) {
+  try {
+    const stored = await chrome.storage.local.get('logs');
+    const logs = stored.logs || [];
+    logs.push({ type, data, time: Date.now() });
+    if (logs.length > 50) logs.shift(); // Keep last 50
+    await chrome.storage.local.set({ logs: logs });
+    console.log('[Log] Stored:', type, logs.length, 'entries');
+  } catch (e) {
+    console.error('[Log] Error:', e);
+  }
 }
 
 // Handle commands from Claude Code
 async function handleCommand(topic, command) {
   console.log('[Claude] Command:', command);
+  await broadcastLog('cmd', command);
 
   let result;
 
@@ -280,7 +305,14 @@ async function handleCommand(topic, command) {
             const el = document.querySelector(sel);
             if (el) {
               el.focus();
-              el.value = text;
+              // Handle both input/textarea and contenteditable
+              if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                el.value = text;
+              } else if (el.isContentEditable || el.getAttribute('contenteditable')) {
+                el.textContent = text;
+              } else {
+                el.value = text; // fallback
+              }
               el.dispatchEvent(new Event('input', { bubbles: true }));
               return { success: true };
             }
@@ -301,6 +333,82 @@ async function handleCommand(topic, command) {
           args: [command.selector]
         });
         result = result[0]?.result;
+        break;
+
+      case 'key':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (key) => {
+            const event = new KeyboardEvent('keydown', { key: key, bubbles: true });
+            document.activeElement.dispatchEvent(event);
+            return { success: true };
+          },
+          args: [command.key]
+        });
+        result = result[0]?.result;
+        break;
+
+      case 'wait_response':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (timeout) => {
+            return new Promise((resolve) => {
+              const startTime = Date.now();
+              // Count initial responses to detect NEW ones
+              const getResponses = () => document.querySelectorAll('message-content, [data-message-id], .model-response-text');
+              const initialCount = getResponses().length;
+              let lastText = '';
+              let stableCount = 0;
+
+              const checkResponse = () => {
+                const responses = getResponses();
+                // Wait for NEW response (more than initial)
+                if (responses.length > initialCount) {
+                  const lastResponse = responses[responses.length - 1];
+                  const text = (lastResponse.textContent || lastResponse.innerText || '').trim();
+
+                  // Check if text is stable (not still typing)
+                  if (text === lastText && text.length > 5) {
+                    stableCount++;
+                    if (stableCount >= 3) { // Stable for 3 checks = done
+                      resolve({ answer: text, success: true });
+                      return true;
+                    }
+                  } else {
+                    lastText = text;
+                    stableCount = 0;
+                  }
+                }
+
+                // Timeout check
+                if (Date.now() - startTime > timeout) {
+                  if (lastText.length > 5) {
+                    resolve({ answer: lastText, success: true });
+                  } else {
+                    resolve({ error: 'Timeout waiting for response' });
+                  }
+                  return true;
+                }
+                return false;
+              };
+
+              // Poll every 500ms
+              const interval = setInterval(() => {
+                if (checkResponse()) clearInterval(interval);
+              }, 500);
+            });
+          },
+          args: [command.timeout || 15000]
+        });
+        result = result[0]?.result;
+        // Publish answer to separate topic and sidebar
+        if (result?.answer) {
+          publish(TOPICS.answer, {
+            answer: result.answer,
+            timestamp: Date.now()
+          }, true); // retained
+          await broadcastLog('answer', { answer: result.answer }); // Show in sidebar box
+        }
         break;
 
       case 'screenshot':
@@ -331,6 +439,53 @@ async function handleCommand(topic, command) {
         result = result[0]?.result;
         break;
 
+      case 'select_model':
+        // Select Gemini model: "fast", "thinking", "pro"
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (modelName) => {
+            // Click the model dropdown (Pro v button)
+            const dropdownBtn = document.querySelector('button[aria-haspopup="listbox"]') ||
+                               document.querySelector('[data-model-selector]') ||
+                               Array.from(document.querySelectorAll('button')).find(b =>
+                                 b.textContent.match(/Pro|Fast|Thinking/i) && b.querySelector('svg'));
+            if (!dropdownBtn) return { error: 'Model dropdown not found' };
+
+            dropdownBtn.click();
+            await new Promise(r => setTimeout(r, 500));
+
+            // Find and click the model option
+            const modelMap = {
+              'fast': 'Fast',
+              'thinking': 'Thinking',
+              'pro': 'Pro'
+            };
+            const targetModel = modelMap[modelName.toLowerCase()] || modelName;
+
+            const options = document.querySelectorAll('[role="option"], [role="menuitem"]');
+            for (const opt of options) {
+              if (opt.textContent.includes(targetModel)) {
+                opt.click();
+                return { success: true, model: targetModel };
+              }
+            }
+
+            // Try clicking by text content
+            const allButtons = document.querySelectorAll('button, div[role="option"]');
+            for (const btn of allButtons) {
+              if (btn.textContent.trim().startsWith(targetModel)) {
+                btn.click();
+                return { success: true, model: targetModel };
+              }
+            }
+
+            return { error: 'Model option not found: ' + targetModel };
+          },
+          args: [command.model || 'pro']
+        });
+        result = result[0]?.result;
+        break;
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
@@ -338,13 +493,15 @@ async function handleCommand(topic, command) {
     result = { error: err.message };
   }
 
-  // Send response
-  publish(TOPICS.response, {
+  // Send response (retained)
+  const response = {
     id: command.id,
     action: command.action,
     result: result,
     timestamp: Date.now()
-  });
+  };
+  publish(TOPICS.response, response, true); // retain=true
+  await broadcastLog('res', response);
 }
 
 // Listen for messages from popup/sidepanel
@@ -381,3 +538,55 @@ setInterval(() => {
     ws.send(new Uint8Array([0xC0, 0x00])); // PINGREQ
   }
 }, 30000);
+
+// Publish current page info (retained) - only for Gemini
+let lastPublishedUrl = '';
+async function publishCurrentPage() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url && tab.url.includes('gemini.google.com') && tab.url !== lastPublishedUrl) {
+      lastPublishedUrl = tab.url;
+      const pageInfo = {
+        url: tab.url,
+        title: tab.title,
+        timestamp: Date.now()
+      };
+      publish(TOPICS.page, pageInfo, true); // retain=true
+      await broadcastLog('page', pageInfo); // Show in sidebar
+    }
+  } catch (e) {
+    console.error('[Page] Error:', e);
+  }
+}
+
+// Enable/disable sidebar based on URL (greyed out on non-Gemini)
+async function updateSidebarState() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const onGemini = tab?.url?.includes('gemini.google.com');
+    await chrome.sidePanel.setOptions({
+      tabId: tab.id,
+      path: 'sidepanel.html',
+      enabled: onGemini
+    });
+  } catch (e) {
+    // Ignore
+  }
+}
+
+// Listen for tab changes
+chrome.tabs.onActivated.addListener(() => {
+  publishCurrentPage();
+  updateBadge(isConnected);
+  updateSidebarState();
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url || changeInfo.title) {
+    publishCurrentPage();
+    updateBadge(isConnected);
+    updateSidebarState();
+  }
+});
+
+// Publish initial page after connection
+setTimeout(publishCurrentPage, 2000);

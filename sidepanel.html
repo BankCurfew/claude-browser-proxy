@@ -24,30 +24,45 @@
     .log { font-family: monospace; font-size: 11px; padding: 6px 8px; margin-bottom: 4px; background: #0f0f23; border-radius: 4px; word-break: break-all; }
     .log.cmd { border-left: 3px solid #4f46e5; }
     .log.res { border-left: 3px solid #22c55e; }
+    .log.answer { border-left: 3px solid #f59e0b; background: #1c1c1c; }
     .log .t { color: #666; margin-right: 8px; }
+    .answer-box { padding: 12px 16px; background: #0d1b2a; border-bottom: 1px solid #333; max-height: 200px; overflow-y: auto; }
+    .answer-box h3 { font-size: 11px; color: #f59e0b; margin-bottom: 8px; }
+    .answer-box .text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
     .btns { padding: 12px; border-top: 1px solid #333; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     button { padding: 8px; border: none; border-radius: 6px; background: #374151; color: white; cursor: pointer; font-size: 11px; }
     button:hover { background: #4b5563; }
     button.p { background: #4f46e5; }
+    .input-row { padding: 12px; border-top: 1px solid #333; display: flex; gap: 8px; }
+    .input-row input { flex: 1; padding: 8px; border: 1px solid #333; border-radius: 6px; background: #0f0f23; color: #eee; font-size: 12px; }
+    .input-row input:focus { outline: none; border-color: #4f46e5; }
     footer { padding: 8px 16px; border-top: 1px solid #333; font-size: 10px; color: #666; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Claude Browser Proxy <span class="version" id="v"></span></h1>
+    <h1>Gemini Proxy <span class="version" id="v"></span></h1>
     <div class="status"><div class="dot" id="d"></div><span id="s">Checking...</span></div>
   </header>
   <div class="page"><strong id="pt">Loading...</strong><div class="url" id="pu"></div></div>
+  <div class="answer-box" id="ab" style="display:none;">
+    <h3>🤖 Gemini Response</h3>
+    <div class="text" id="at">Waiting for response...</div>
+  </div>
   <div class="logs" id="l"></div>
+  <div class="input-row">
+    <input type="text" id="inp" placeholder="Ask Gemini anything...">
+    <button id="run" class="p">Ask</button>
+  </div>
   <div class="btns">
     <button id="b1">Get URL</button>
     <button id="b2">Get Text</button>
     <button id="b3">Get HTML</button>
     <button id="b4">Videos</button>
     <button id="b5">Screenshot</button>
-    <button id="b6" class="p">Clear</button>
+    <button id="b6">Clear</button>
   </div>
-  <footer>ws://localhost:9001</footer>
+  <footer>ws://localhost:9001 | <span id="vb"></span></footer>
   <script src="sidepanel.js"></script>
 </body>
 </html>
