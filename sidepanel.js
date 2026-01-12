@@ -127,6 +127,28 @@ $('b6').onclick = async () => {
   log('res', 'Cleared');
 };
 
+// Model selection buttons
+document.querySelectorAll('.model-btn').forEach(btn => {
+  btn.onclick = async () => {
+    const model = btn.dataset.model;
+    log('cmd', '🔄 Switching to ' + model + '...');
+
+    // Update UI immediately
+    document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Send command
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'command',
+        command: { action: 'select_model', model: model, id: 'model_' + Date.now() }
+      });
+    } catch (e) {
+      log('res', '❌ Error: ' + e.message);
+    }
+  };
+});
+
 // Watch for MQTT logs from background (filter chat noise)
 let lastLogCount = 0;
 async function syncLogs() {

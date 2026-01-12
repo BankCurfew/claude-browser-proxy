@@ -211,7 +211,7 @@ function publish(topic, message, retain = false) {
 }
 
 // Update extension badge and storage
-const VERSION = '1.6.2';
+const VERSION = '1.7.0';
 async function updateBadge(connected) {
   // Only show badge when on Gemini - display version number
   try {
