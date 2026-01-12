@@ -211,7 +211,7 @@ function publish(topic, message, retain = false) {
 }
 
 // Update extension badge and storage
-const VERSION = '1.6';
+const VERSION = '1.6.1';
 async function updateBadge(connected) {
   // Only show badge when on Gemini - display version number
   try {
@@ -445,11 +445,11 @@ async function handleCommand(topic, command) {
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async (modelName) => {
-            // Click the model dropdown (Pro v button)
-            const dropdownBtn = document.querySelector('button[aria-haspopup="listbox"]') ||
-                               document.querySelector('[data-model-selector]') ||
+            // Click the model dropdown (input-area-switch button)
+            const dropdownBtn = document.querySelector('button.input-area-switch') ||
+                               document.querySelector('.mat-mdc-button-touch-target')?.closest('button') ||
                                Array.from(document.querySelectorAll('button')).find(b =>
-                                 b.textContent.match(/Pro|Fast|Thinking/i) && b.querySelector('svg'));
+                                 b.textContent.trim().match(/^(Pro|Fast|Thinking)$/));
             if (!dropdownBtn) return { error: 'Model dropdown not found' };
 
             dropdownBtn.click();
