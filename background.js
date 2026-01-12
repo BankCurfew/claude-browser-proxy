@@ -211,12 +211,13 @@ function publish(topic, message, retain = false) {
 }
 
 // Update extension badge and storage
+const VERSION = '1.6';
 async function updateBadge(connected) {
-  // Only show badge when on Gemini
+  // Only show badge when on Gemini - display version number
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const onGemini = tab?.url?.includes('gemini.google.com');
-    chrome.action.setBadgeText({ text: (connected && onGemini) ? 'ON' : '' });
+    chrome.action.setBadgeText({ text: (connected && onGemini) ? VERSION : '' });
     chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
   } catch (e) {
     chrome.action.setBadgeText({ text: '' });
