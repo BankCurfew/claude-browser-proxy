@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gemini Proxy",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Control Gemini from Claude Code via MQTT",
   "permissions": [
     "activeTab",

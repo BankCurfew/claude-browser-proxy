@@ -211,7 +211,7 @@ function publish(topic, message, retain = false) {
 }
 
 // Update extension badge and storage
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 async function updateBadge(connected) {
   // Only show badge when on Gemini - display version number
   try {
@@ -445,42 +445,70 @@ async function handleCommand(topic, command) {
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async (modelName) => {
-            // Click the model dropdown (input-area-switch button)
-            const dropdownBtn = document.querySelector('button.input-area-switch') ||
-                               document.querySelector('.mat-mdc-button-touch-target')?.closest('button') ||
-                               Array.from(document.querySelectorAll('button')).find(b =>
-                                 b.textContent.trim().match(/^(Pro|Fast|Thinking)$/));
-            if (!dropdownBtn) return { error: 'Model dropdown not found' };
+            // Debug: collect info about buttons
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const debug = {
+              totalButtons: allBtns.length,
+              candidates: []
+            };
 
+            // Find model dropdown button - multiple strategies
+            let dropdownBtn = null;
+
+            // Strategy 1: class contains input-area-switch
+            dropdownBtn = allBtns.find(b => b.className.includes('input-area-switch'));
+            if (dropdownBtn) debug.foundBy = 'input-area-switch';
+
+            // Strategy 2: text is exactly Pro/Fast/Thinking
+            if (!dropdownBtn) {
+              dropdownBtn = allBtns.find(b => b.textContent.trim().match(/^(Pro|Fast|Thinking)$/));
+              if (dropdownBtn) debug.foundBy = 'text-match';
+            }
+
+            // Strategy 3: parent has pill-ui
+            if (!dropdownBtn) {
+              dropdownBtn = allBtns.find(b => b.parentElement?.className?.includes('pill-ui'));
+              if (dropdownBtn) debug.foundBy = 'pill-ui-parent';
+            }
+
+            // Collect debug info
+            allBtns.slice(0, 20).forEach(b => {
+              if (b.textContent.length < 30) {
+                debug.candidates.push({ class: b.className.substring(0, 40), text: b.textContent.trim() });
+              }
+            });
+
+            if (!dropdownBtn) {
+              return { error: 'Model dropdown not found', debug, request: modelName };
+            }
+
+            debug.clickedButton = { class: dropdownBtn.className.substring(0, 50), text: dropdownBtn.textContent.trim() };
             dropdownBtn.click();
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 600));
 
             // Find and click the model option
-            const modelMap = {
-              'fast': 'Fast',
-              'thinking': 'Thinking',
-              'pro': 'Pro'
-            };
+            const modelMap = { 'fast': 'Fast', 'thinking': 'Thinking', 'pro': 'Pro' };
             const targetModel = modelMap[modelName.toLowerCase()] || modelName;
 
-            const options = document.querySelectorAll('[role="option"], [role="menuitem"]');
+            // Look for menu items
+            const options = document.querySelectorAll('[role="option"], [role="menuitem"], [role="listbox"] button, .mat-mdc-menu-item');
             for (const opt of options) {
               if (opt.textContent.includes(targetModel)) {
                 opt.click();
-                return { success: true, model: targetModel };
+                return { success: true, model: targetModel, debug, request: modelName };
               }
             }
 
-            // Try clicking by text content
-            const allButtons = document.querySelectorAll('button, div[role="option"]');
-            for (const btn of allButtons) {
-              if (btn.textContent.trim().startsWith(targetModel)) {
-                btn.click();
-                return { success: true, model: targetModel };
+            // Fallback: any clickable with model name
+            const allClickables = document.querySelectorAll('button, div[role="option"], .mdc-list-item');
+            for (const el of allClickables) {
+              if (el.textContent.trim().startsWith(targetModel) && el !== dropdownBtn) {
+                el.click();
+                return { success: true, model: targetModel, debug, request: modelName };
               }
             }
 
-            return { error: 'Model option not found: ' + targetModel };
+            return { error: 'Model option not found: ' + targetModel, debug, request: modelName };
           },
           args: [command.model || 'pro']
         });
