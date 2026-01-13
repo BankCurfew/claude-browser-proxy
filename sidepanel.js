@@ -159,20 +159,23 @@ $('b7').onclick = async () => {
       log('res', '❌ Not on Gemini page');
       return;
     }
-    // Get directly from DOM
+    // Get ALL responses from DOM
     const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
-        const el = document.querySelector('MESSAGE-CONTENT') || document.querySelector('message-content');
-        if (!el) return { error: 'No response found' };
         const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
-        const last = all[all.length - 1];
-        return { answer: (last?.innerText || '').trim(), count: all.length };
+        if (all.length === 0) return { error: 'No responses found' };
+        // Get all responses as array
+        const responses = Array.from(all).map((el, i) => {
+          const text = (el.innerText || '').trim();
+          return `[${i + 1}] ${text.substring(0, 500)}${text.length > 500 ? '...' : ''}`;
+        });
+        return { answers: responses, count: all.length };
       }
     });
     const data = result[0]?.result;
-    if (data?.answer) {
-      showAnswer(data.answer);
+    if (data?.answers) {
+      showAnswer(data.answers.join('\n\n---\n\n'));
       log('res', '✅ Got ' + data.count + ' response(s)');
     } else {
       log('res', '❌ ' + (data?.error || 'No response'));
