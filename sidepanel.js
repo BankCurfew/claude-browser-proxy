@@ -226,16 +226,17 @@ async function updateState() {
 
 // Handle state from logs
 function handleStateUpdate(state) {
-  if (!state) return;
+  if (!state || state.error) return; // Skip errors
 
   // Update loading indicator
   const loadingEl = $('sl');
+  const count = state.responseCount || 0;
   if (state.loading) {
     loadingEl.textContent = '🔄';
     loadingEl.title = 'Loading...';
   } else {
-    loadingEl.textContent = state.responseCount > 0 ? '✅' : '⚪';
-    loadingEl.title = state.responseCount > 0 ? 'Done' : 'Ready';
+    loadingEl.textContent = count > 0 ? '✅' : '⚪';
+    loadingEl.title = count > 0 ? 'Done' : 'Ready';
   }
 
   // Update tool indicator
@@ -249,7 +250,7 @@ function handleStateUpdate(state) {
   }
 
   // Update response count
-  $('sc').textContent = state.responseCount + ' response' + (state.responseCount !== 1 ? 's' : '');
+  $('sc').textContent = count + ' response' + (count !== 1 ? 's' : '');
 }
 
 // Hook into log sync to capture state updates
