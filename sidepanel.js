@@ -19,8 +19,9 @@ function formatMsg(msg) {
   };
 
   // Check if this is a publish log (from sidebar button)
-  if (msg.action && msg.result && !msg.id) {
-    const summary = '📤 ' + msg.action + ' — published';
+  if (msg.topic && msg.payload) {
+    const action = msg.payload?.action || 'unknown';
+    const summary = '📤 ' + action + ' → ' + msg.topic + ' (' + msg.size + 'b, qos:' + msg.qos + ', retained:' + msg.retained + ')';
     const str = JSON.stringify(msg, null, 2);
     return '<details><summary>' + summary + '</summary><pre>' + str + '</pre></details>';
   }
@@ -155,23 +156,24 @@ $('run').onclick = () => {
 };
 $('inp').onkeydown = (e) => { if (e.key === 'Enter') $('run').click(); };
 
-// Helper: publish result to MQTT
+// Helper: publish result to MQTT (returns debug info)
 async function publishResult(action, result) {
   try {
-    await chrome.runtime.sendMessage({
-      action: 'command',
-      command: { action: 'publish_result', data: { action, result, timestamp: Date.now() } }
+    const resp = await chrome.runtime.sendMessage({
+      action: 'publish_result',
+      data: { action, result, timestamp: Date.now() }
     });
-    return true;
-  } catch (e) { return false; }
+    return resp; // { ok, topic, qos, retained, size }
+  } catch (e) { return null; }
 }
 
-// Buttons - direct execution + MQTT publish
+// Buttons - direct execution + MQTT publish with debug
 $('b1').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const result = { url: tab?.url || 'No URL', title: tab?.title || '' };
   log('res', '🔗 ' + result.url);
-  if (await publishResult('get_url', result)) log('pub', { action: 'get_url', result });
+  const pub = await publishResult('get_url', result);
+  if (pub?.ok) log('pub', pub);
 };
 $('b2').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -179,7 +181,8 @@ $('b2').onclick = async () => {
   const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body.innerText });
   const text = r[0]?.result || '';
   log('res', '📄 ' + text.substring(0, 200) + '...');
-  if (await publishResult('get_text', { text })) log('pub', { action: 'get_text', result: { text: text.substring(0, 500) + '...' } });
+  const pub = await publishResult('get_text', { text });
+  if (pub?.ok) log('pub', { ...pub, payload: { ...pub.payload, result: { text: text.substring(0, 200) + '...' } } });
 };
 $('b3').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -187,7 +190,8 @@ $('b3').onclick = async () => {
   const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.outerHTML });
   const html = r[0]?.result || '';
   log('res', '🌐 ' + html.length + ' chars');
-  if (await publishResult('get_html', { html })) log('pub', { action: 'get_html', result: { chars: html.length } });
+  const pub = await publishResult('get_html', { html });
+  if (pub?.ok) log('pub', { ...pub, payload: { ...pub.payload, result: { chars: html.length } } });
 };
 $('b4').onclick = () => cmd('get_videos');
 $('b5').onclick = () => cmd('screenshot');

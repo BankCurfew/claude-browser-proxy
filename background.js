@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.2'; // Short version for badge display
+const VERSION = '2.6.3'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -471,16 +471,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (client) client.end();
     connect();
     sendResponse({ ok: true });
+  } else if (msg.action === 'publish_result') {
+    // Direct publish from sidebar with debug info
+    const data = msg.data;
+    const payload = { action: data.action, result: data.result, timestamp: data.timestamp, source: 'sidebar' };
+    const payloadStr = JSON.stringify(payload);
+    publish(TOPICS.response, payload, true);
+    sendResponse({
+      ok: true,
+      topic: TOPICS.response,
+      qos: 0,
+      retained: true,
+      size: payloadStr.length,
+      payload: payload
+    });
   } else if (msg.action === 'command') {
-    // Handle publish_result from sidebar (direct publish, no execution)
-    if (msg.command?.action === 'publish_result') {
-      const data = msg.command.data;
-      publish(TOPICS.response, { action: data.action, result: data.result, timestamp: data.timestamp, source: 'sidebar' }, true);
-      sendResponse({ ok: true });
-    } else {
-      publish(TOPICS.command, msg.command);
-      sendResponse({ ok: true });
-    }
+    publish(TOPICS.command, msg.command);
+    sendResponse({ ok: true });
   }
   return true;
 });
