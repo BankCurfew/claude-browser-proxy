@@ -6,12 +6,28 @@ const version = 'v' + chrome.runtime.getManifest().version;
 $('v').textContent = version;
 $('vb').textContent = version;
 
+// Format JSON nicely - show key info, collapse details
+function formatMsg(msg) {
+  if (typeof msg !== 'object') return msg;
+
+  // Extract key info for summary
+  const action = msg.action || msg.result?.action || '';
+  const id = msg.id || '';
+  const success = msg.result?.success ? '✅' : (msg.result?.error ? '❌' : '');
+  const summary = [action, success, id].filter(Boolean).join(' ') || 'data';
+
+  const str = JSON.stringify(msg, null, 2);
+  // If very short, show inline
+  if (str.length < 60) return '<code>' + JSON.stringify(msg) + '</code>';
+  // Otherwise collapsible (closed by default)
+  return '<details><summary>📦 ' + summary + '</summary><pre>' + str + '</pre></details>';
+}
+
 // Log function
 function log(type, msg) {
   const el = document.createElement('div');
   el.className = 'log ' + type;
-  el.innerHTML = '<span class="t">' + new Date().toLocaleTimeString() + '</span>' +
-    (typeof msg === 'object' ? JSON.stringify(msg) : msg);
+  el.innerHTML = '<span class="t">' + new Date().toLocaleTimeString() + '</span>' + formatMsg(msg);
   $('l').appendChild(el);
   $('l').scrollTop = $('l').scrollHeight;
 
@@ -127,6 +143,20 @@ $('b6').onclick = async () => {
   log('res', 'Cleared');
 };
 
+// Get Gemini Response button
+$('b7').onclick = async () => {
+  log('cmd', '📥 Getting Gemini response...');
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'command',
+      command: { action: 'get_response', id: 'get_resp_' + Date.now() }
+    });
+    // Response will come via storage logs
+  } catch (e) {
+    log('res', '❌ Error: ' + e.message);
+  }
+};
+
 // Model selection buttons
 document.querySelectorAll('.model-btn').forEach(btn => {
   btn.onclick = async () => {
@@ -181,11 +211,83 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.mqttConnected) checkStatus();
 });
 
+// Update Gemini state display
+async function updateState() {
+  try {
+    // Send get_state command
+    await chrome.runtime.sendMessage({
+      action: 'command',
+      command: { action: 'get_state', id: 'state_poll_' + Date.now() }
+    });
+  } catch (e) {
+    // Ignore errors
+  }
+}
+
+// Handle state from logs
+function handleStateUpdate(state) {
+  if (!state) return;
+
+  // Update loading indicator
+  const loadingEl = $('sl');
+  if (state.loading) {
+    loadingEl.textContent = '🔄';
+    loadingEl.title = 'Loading...';
+  } else {
+    loadingEl.textContent = state.responseCount > 0 ? '✅' : '⚪';
+    loadingEl.title = state.responseCount > 0 ? 'Done' : 'Ready';
+  }
+
+  // Update tool indicator
+  const toolEl = $('st');
+  toolEl.className = 'state-tool';
+  if (state.tool) {
+    toolEl.textContent = state.tool;
+    toolEl.classList.add(state.tool);
+  } else {
+    toolEl.textContent = '-';
+  }
+
+  // Update response count
+  $('sc').textContent = state.responseCount + ' response' + (state.responseCount !== 1 ? 's' : '');
+}
+
+// Hook into log sync to capture state updates
+const origSyncLogs = syncLogs;
+async function syncLogsWithState() {
+  const data = await chrome.storage.local.get('logs');
+  const logs = data.logs || [];
+  if (logs.length > lastLogCount) {
+    logs.slice(lastLogCount).forEach(l => {
+      // Check for state response
+      if (l.data?.action === 'get_state' && l.data?.result) {
+        handleStateUpdate(l.data.result);
+      }
+      const id = l.data?.id || '';
+      if (id.startsWith('chat_')) return;
+      if (id.startsWith('state_poll_')) return; // Hide state polls
+      if (l.type === 'page') return;
+      if (l.type === 'answer') {
+        showAnswer(l.data?.answer || JSON.stringify(l.data));
+        log('res', '✅ Gemini responded!');
+        return;
+      }
+      log(l.type, l.data);
+    });
+    lastLogCount = logs.length;
+  }
+}
+
+// Replace sync function
+syncLogs = syncLogsWithState;
+
 // Init
 checkStatus();
 updatePage();
 syncLogs();
+updateState(); // Initial state check
 setInterval(checkStatus, 2000);
 setInterval(updatePage, 3000);
-setInterval(syncLogs, 1000); // Poll for logs as fallback
+setInterval(syncLogs, 1000);
+setInterval(updateState, 2000); // Poll state every 2s
 log('res', 'Ready');

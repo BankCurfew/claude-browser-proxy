@@ -1,229 +1,103 @@
 // Claude Browser Proxy - Background Service Worker
-// Connects to local Mosquitto MQTT broker via WebSocket
+// Uses MQTT.js library for WebSocket connection to Mosquitto broker
 
-const MQTT_WS_URL = 'ws://localhost:9001';
+importScripts('mqtt.min.js');
+
+const VERSION = '2.3.0'; // Short version for badge display
+const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
   response: 'claude/browser/response',
   page: 'claude/browser/page',
-  answer: 'claude/browser/answer'
+  answer: 'claude/browser/answer',
+  status: 'claude/browser/status',
+  state: 'claude/browser/state'  // Loading/tool state
 };
 
-let ws = null;
+let client = null;
 let isConnected = false;
-let messageId = 1;
 
-// Encode remaining length (MQTT variable byte integer)
-function encodeRemainingLength(length) {
-  const bytes = [];
-  do {
-    let byte = length % 128;
-    length = Math.floor(length / 128);
-    if (length > 0) byte |= 0x80;
-    bytes.push(byte);
-  } while (length > 0);
-  return bytes;
-}
-
-// Create MQTT CONNECT packet
-function createConnectPacket() {
-  const clientId = 'claude-browser-' + Date.now();
-  const clientIdBytes = new TextEncoder().encode(clientId);
-
-  const variableHeader = [
-    0x00, 0x04, // Protocol name length
-    0x4D, 0x51, 0x54, 0x54, // "MQTT"
-    0x04, // Protocol level (4 = 3.1.1)
-    0x02, // Connect flags (clean session)
-    0x00, 0x3C // Keep alive (60 seconds)
-  ];
-
-  const payload = [
-    (clientIdBytes.length >> 8) & 0xFF,
-    clientIdBytes.length & 0xFF,
-    ...clientIdBytes
-  ];
-
-  const remainingLength = variableHeader.length + payload.length;
-
-  return new Uint8Array([
-    0x10, // CONNECT packet type
-    ...encodeRemainingLength(remainingLength),
-    ...variableHeader,
-    ...payload
-  ]);
-}
-
-// Create MQTT SUBSCRIBE packet
-function createSubscribePacket(topic) {
-  const topicBytes = new TextEncoder().encode(topic);
-  const msgId = messageId++;
-
-  const variableHeader = [
-    (msgId >> 8) & 0xFF,
-    msgId & 0xFF
-  ];
-
-  const payload = [
-    (topicBytes.length >> 8) & 0xFF,
-    topicBytes.length & 0xFF,
-    ...topicBytes,
-    0x00 // QoS 0
-  ];
-
-  const remainingLength = variableHeader.length + payload.length;
-
-  return new Uint8Array([
-    0x82, // SUBSCRIBE packet type
-    ...encodeRemainingLength(remainingLength),
-    ...variableHeader,
-    ...payload
-  ]);
-}
-
-// Create MQTT PUBLISH packet (with optional retain flag)
-function createPublishPacket(topic, message, retain = false) {
-  const topicBytes = new TextEncoder().encode(topic);
-  const payloadBytes = new TextEncoder().encode(
-    typeof message === 'string' ? message : JSON.stringify(message)
-  );
-
-  const variableHeader = [
-    (topicBytes.length >> 8) & 0xFF,
-    topicBytes.length & 0xFF,
-    ...topicBytes
-  ];
-
-  const remainingLength = variableHeader.length + payloadBytes.length;
-  const flags = retain ? 0x31 : 0x30; // 0x31 = PUBLISH + retain
-
-  return new Uint8Array([
-    flags, // PUBLISH packet type (QoS 0, optional retain)
-    ...encodeRemainingLength(remainingLength),
-    ...variableHeader,
-    ...payloadBytes
-  ]);
-}
-
-// Parse incoming MQTT packet
-function parsePacket(data) {
-  const type = (data[0] & 0xF0) >> 4;
-  let offset = 1;
-
-  // Decode remaining length
-  let remainingLength = 0;
-  let multiplier = 1;
-  let byte;
-  do {
-    byte = data[offset++];
-    remainingLength += (byte & 0x7F) * multiplier;
-    multiplier *= 128;
-  } while (byte & 0x80);
-
-  return { type, offset, remainingLength, data };
-}
-
-// Handle incoming PUBLISH
-function handlePublish(packet) {
-  let offset = packet.offset;
-
-  // Topic length
-  const topicLength = (packet.data[offset] << 8) | packet.data[offset + 1];
-  offset += 2;
-
-  // Topic
-  const topic = new TextDecoder().decode(
-    packet.data.slice(offset, offset + topicLength)
-  );
-  offset += topicLength;
-
-  // Payload
-  const payload = new TextDecoder().decode(
-    packet.data.slice(offset, offset + packet.remainingLength - topicLength - 2)
-  );
-
-  console.log('[MQTT] Received:', topic, payload);
-
-  try {
-    handleCommand(topic, JSON.parse(payload));
-  } catch (e) {
-    handleCommand(topic, payload);
-  }
-}
-
-// Connect to MQTT broker
+// Connect to MQTT broker with LWT
 function connect() {
-  console.log('[MQTT] Connecting to', MQTT_WS_URL);
+  console.log('[MQTT] Connecting to', MQTT_URL);
 
-  ws = new WebSocket(MQTT_WS_URL, 'mqtt');
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => {
-    console.log('[MQTT] WebSocket open, sending CONNECT');
-    ws.send(createConnectPacket());
-  };
-
-  ws.onmessage = (event) => {
-    const packet = parsePacket(new Uint8Array(event.data));
-
-    switch (packet.type) {
-      case 2: // CONNACK
-        console.log('[MQTT] Connected!');
-        isConnected = true;
-        updateBadge(true);
-        // Subscribe to command topic
-        ws.send(createSubscribePacket(TOPICS.command));
-        break;
-
-      case 3: // PUBLISH
-        handlePublish(packet);
-        break;
-
-      case 9: // SUBACK
-        console.log('[MQTT] Subscribed to', TOPICS.command);
-        break;
-
-      case 13: // PINGRESP
-        console.log('[MQTT] Ping OK');
-        break;
+  client = mqtt.connect(MQTT_URL, {
+    clientId: 'claude-browser-' + Date.now(),
+    keepalive: 15, // 15 seconds - LWT triggers after ~22 sec if no ping
+    reconnectPeriod: 5000, // Reconnect every 5 seconds
+    will: {
+      topic: TOPICS.status,
+      payload: JSON.stringify({ status: 'offline', timestamp: Date.now(), version: VERSION }),
+      qos: 0,
+      retain: true
     }
-  };
+  });
 
-  ws.onclose = () => {
+  client.on('connect', () => {
+    console.log('[MQTT] Connected!');
+    isConnected = true;
+    updateBadge(true);
+
+    // Subscribe to command topic
+    client.subscribe(TOPICS.command, (err) => {
+      if (err) console.error('[MQTT] Subscribe error:', err);
+      else console.log('[MQTT] Subscribed to', TOPICS.command);
+    });
+
+    // Publish "online" status (retained) - overrides LWT "offline"
+    client.publish(TOPICS.status, JSON.stringify({
+      status: 'online',
+      timestamp: Date.now(),
+      version: VERSION
+    }), { retain: true });
+  });
+
+  client.on('message', (topic, message) => {
+    console.log('[MQTT] Received:', topic);
+    try {
+      const command = JSON.parse(message.toString());
+      handleCommand(topic, command);
+    } catch (e) {
+      handleCommand(topic, message.toString());
+    }
+  });
+
+  client.on('close', () => {
     console.log('[MQTT] Disconnected');
     isConnected = false;
     updateBadge(false);
-    setTimeout(connect, 5000);
-  };
+  });
 
-  ws.onerror = (err) => {
-    console.error('[MQTT] WebSocket Error:', err);
-    console.error('[MQTT] ReadyState:', ws.readyState);
-  };
+  client.on('error', (err) => {
+    console.error('[MQTT] Error:', err);
+  });
 }
 
 // Publish message (with optional retain)
 function publish(topic, message, retain = false) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(createPublishPacket(topic, message, retain));
+  if (client && isConnected) {
+    const payload = typeof message === 'string' ? message : JSON.stringify(message);
+    client.publish(topic, payload, { retain });
     console.log('[MQTT] Published to', topic, retain ? '(retained)' : '');
   }
 }
 
 // Update extension badge and storage
-const VERSION = '1.7.0';
 async function updateBadge(connected) {
-  // Only show badge when on Gemini - display version number
+  chrome.storage.local.set({ mqttConnected: connected });
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const onGemini = tab?.url?.includes('gemini.google.com');
-    chrome.action.setBadgeText({ text: (connected && onGemini) ? VERSION : '' });
-    chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
+    const onGemini = tab && tab.url && tab.url.includes('gemini.google.com');
+    chrome.action.setBadgeText({ text: VERSION }); // Always show full version "2.0.5"
+    if (onGemini && connected) {
+      chrome.action.setBadgeBackgroundColor({ color: '#22c55e' }); // green
+    } else {
+      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' }); // red
+    }
   } catch (e) {
-    chrome.action.setBadgeText({ text: '' });
+    chrome.action.setBadgeText({ text: VERSION });
+    chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
   }
-  // Save to storage for sidepanel
-  chrome.storage.local.set({ mqttConnected: connected });
 }
 
 // Broadcast to sidepanel via storage
@@ -232,9 +106,8 @@ async function broadcastLog(type, data) {
     const stored = await chrome.storage.local.get('logs');
     const logs = stored.logs || [];
     logs.push({ type, data, time: Date.now() });
-    if (logs.length > 50) logs.shift(); // Keep last 50
-    await chrome.storage.local.set({ logs: logs });
-    console.log('[Log] Stored:', type, logs.length, 'entries');
+    if (logs.length > 50) logs.shift();
+    await chrome.storage.local.set({ logs });
   } catch (e) {
     console.error('[Log] Error:', e);
   }
@@ -257,7 +130,7 @@ async function handleCommand(topic, command) {
           target: { tabId: tab.id },
           func: () => document.documentElement.outerHTML
         });
-        result = { html: result[0]?.result?.substring(0, 50000) }; // Limit size
+        result = { html: result[0]?.result?.substring(0, 50000) };
         break;
 
       case 'get_text':
@@ -270,6 +143,43 @@ async function handleCommand(topic, command) {
 
       case 'get_url':
         result = { url: tab.url, title: tab.title };
+        break;
+
+      case 'get_state':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            // Gemini State Detector
+            const isLoading = () => {
+              const spinner = document.querySelector('mat-mdc-progress-spinner.mdc-circular-progress--indeterminate');
+              const avatarSpinner = document.querySelector('.avatar_spinner_animation');
+              if (spinner) {
+                const rect = spinner.getBoundingClientRect();
+                if (rect.top < window.innerHeight && rect.bottom > 0) return true;
+              }
+              if (avatarSpinner && avatarSpinner.offsetParent !== null) return true;
+              return false;
+            };
+
+            const getActiveTool = () => {
+              if (document.querySelector('img.youtube-icon')) return 'youtube';
+              if (document.querySelector('img.tool-logo[src*="youtube"]')) return 'youtube';
+              if (document.querySelector('img.tool-logo[src*="search"]')) return 'search';
+              if (document.querySelector('img.tool-logo[src*="maps"]')) return 'maps';
+              return null;
+            };
+
+            return {
+              loading: isLoading(),
+              tool: getActiveTool(),
+              responseCount: document.querySelectorAll('MESSAGE-CONTENT').length,
+              timestamp: Date.now()
+            };
+          }
+        });
+        result = result[0]?.result;
+        // Auto-publish state to dedicated topic
+        publish(TOPICS.state, result, false);
         break;
 
       case 'get_videos':
@@ -306,13 +216,12 @@ async function handleCommand(topic, command) {
             const el = document.querySelector(sel);
             if (el) {
               el.focus();
-              // Handle both input/textarea and contenteditable
               if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
                 el.value = text;
               } else if (el.isContentEditable || el.getAttribute('contenteditable')) {
                 el.textContent = text;
               } else {
-                el.value = text; // fallback
+                el.value = text;
               }
               el.dispatchEvent(new Event('input', { bubbles: true }));
               return { success: true };
@@ -355,7 +264,6 @@ async function handleCommand(topic, command) {
           func: (timeout) => {
             return new Promise((resolve) => {
               const startTime = Date.now();
-              // Count initial responses to detect NEW ones
               const getResponses = () => document.querySelectorAll('message-content, [data-message-id], .model-response-text');
               const initialCount = getResponses().length;
               let lastText = '';
@@ -363,15 +271,13 @@ async function handleCommand(topic, command) {
 
               const checkResponse = () => {
                 const responses = getResponses();
-                // Wait for NEW response (more than initial)
                 if (responses.length > initialCount) {
                   const lastResponse = responses[responses.length - 1];
                   const text = (lastResponse.textContent || lastResponse.innerText || '').trim();
 
-                  // Check if text is stable (not still typing)
                   if (text === lastText && text.length > 5) {
                     stableCount++;
-                    if (stableCount >= 3) { // Stable for 3 checks = done
+                    if (stableCount >= 3) {
                       resolve({ answer: text, success: true });
                       return true;
                     }
@@ -381,7 +287,6 @@ async function handleCommand(topic, command) {
                   }
                 }
 
-                // Timeout check
                 if (Date.now() - startTime > timeout) {
                   if (lastText.length > 5) {
                     resolve({ answer: lastText, success: true });
@@ -393,7 +298,6 @@ async function handleCommand(topic, command) {
                 return false;
               };
 
-              // Poll every 500ms
               const interval = setInterval(() => {
                 if (checkResponse()) clearInterval(interval);
               }, 500);
@@ -402,13 +306,51 @@ async function handleCommand(topic, command) {
           args: [command.timeout || 15000]
         });
         result = result[0]?.result;
-        // Publish answer to separate topic and sidebar
         if (result?.answer) {
-          publish(TOPICS.answer, {
-            answer: result.answer,
-            timestamp: Date.now()
-          }, true); // retained
-          await broadcastLog('answer', { answer: result.answer }); // Show in sidebar box
+          publish(TOPICS.answer, { answer: result.answer, timestamp: Date.now() }, true);
+          await broadcastLog('answer', { answer: result.answer });
+        }
+        break;
+
+      case 'get_response':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const selectors = [
+              'message-content',
+              '[data-message-id]',
+              '.model-response-text',
+              '.response-container',
+              '.markdown-main-panel'
+            ];
+
+            let responses = [];
+            for (const sel of selectors) {
+              const els = document.querySelectorAll(sel);
+              if (els.length > 0) {
+                responses = els;
+                break;
+              }
+            }
+
+            if (responses.length === 0) {
+              return { error: 'No Gemini responses found on page' };
+            }
+
+            const lastResponse = responses[responses.length - 1];
+            const text = (lastResponse.textContent || lastResponse.innerText || '').trim();
+
+            if (!text || text.length < 5) {
+              return { error: 'Response is empty or too short' };
+            }
+
+            return { answer: text, success: true, count: responses.length };
+          }
+        });
+        result = result[0]?.result;
+        if (result?.answer) {
+          publish(TOPICS.answer, { answer: result.answer, timestamp: Date.now() }, true);
+          await broadcastLog('answer', { answer: result.answer });
         }
         break;
 
@@ -441,42 +383,25 @@ async function handleCommand(topic, command) {
         break;
 
       case 'select_model':
-        // Select Gemini model: "fast", "thinking", "pro"
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async (modelName) => {
-            // Debug: collect info about buttons
             const allBtns = Array.from(document.querySelectorAll('button'));
-            const debug = {
-              totalButtons: allBtns.length,
-              candidates: []
-            };
+            const debug = { totalButtons: allBtns.length, candidates: [] };
 
-            // Find model dropdown button - multiple strategies
             let dropdownBtn = null;
-
-            // Strategy 1: class contains input-area-switch
             dropdownBtn = allBtns.find(b => b.className.includes('input-area-switch'));
             if (dropdownBtn) debug.foundBy = 'input-area-switch';
 
-            // Strategy 2: text is exactly Pro/Fast/Thinking
             if (!dropdownBtn) {
               dropdownBtn = allBtns.find(b => b.textContent.trim().match(/^(Pro|Fast|Thinking)$/));
               if (dropdownBtn) debug.foundBy = 'text-match';
             }
 
-            // Strategy 3: parent has pill-ui
             if (!dropdownBtn) {
               dropdownBtn = allBtns.find(b => b.parentElement?.className?.includes('pill-ui'));
               if (dropdownBtn) debug.foundBy = 'pill-ui-parent';
             }
-
-            // Collect debug info
-            allBtns.slice(0, 20).forEach(b => {
-              if (b.textContent.length < 30) {
-                debug.candidates.push({ class: b.className.substring(0, 40), text: b.textContent.trim() });
-              }
-            });
 
             if (!dropdownBtn) {
               return { error: 'Model dropdown not found', debug, request: modelName };
@@ -486,11 +411,9 @@ async function handleCommand(topic, command) {
             dropdownBtn.click();
             await new Promise(r => setTimeout(r, 600));
 
-            // Find and click the model option
             const modelMap = { 'fast': 'Fast', 'thinking': 'Thinking', 'pro': 'Pro' };
             const targetModel = modelMap[modelName.toLowerCase()] || modelName;
 
-            // Look for menu items
             const options = document.querySelectorAll('[role="option"], [role="menuitem"], [role="listbox"] button, .mat-mdc-menu-item');
             for (const opt of options) {
               if (opt.textContent.includes(targetModel)) {
@@ -499,7 +422,6 @@ async function handleCommand(topic, command) {
               }
             }
 
-            // Fallback: any clickable with model name
             const allClickables = document.querySelectorAll('button, div[role="option"], .mdc-list-item');
             for (const el of allClickables) {
               if (el.textContent.trim().startsWith(targetModel) && el !== dropdownBtn) {
@@ -529,7 +451,7 @@ async function handleCommand(topic, command) {
     result: result,
     timestamp: Date.now()
   };
-  publish(TOPICS.response, response, true); // retain=true
+  publish(TOPICS.response, response, true);
   await broadcastLog('res', response);
 }
 
@@ -538,11 +460,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'status') {
     sendResponse({ connected: isConnected });
   } else if (msg.action === 'reconnect') {
-    if (ws) ws.close();
+    if (client) client.end();
     connect();
     sendResponse({ ok: true });
   } else if (msg.action === 'command') {
-    // Forward command to MQTT
     publish(TOPICS.command, msg.command);
     sendResponse({ ok: true });
   }
@@ -553,20 +474,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
 
 // Start
-console.log('[Claude Browser Proxy] v1.0.5 Starting...');
-console.log('[Claude Browser Proxy] Connecting to:', MQTT_WS_URL);
+console.log('[Claude Browser Proxy] v' + VERSION + ' Starting with MQTT.js...');
+updateBadge(false); // Show red initially until connected
 try {
   connect();
 } catch (e) {
   console.error('[Claude Browser Proxy] Failed to start:', e);
 }
-
-// Keep alive ping every 30 seconds
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(new Uint8Array([0xC0, 0x00])); // PINGREQ
-  }
-}, 30000);
 
 // Publish current page info (retained) - only for Gemini
 let lastPublishedUrl = '';
@@ -580,15 +494,15 @@ async function publishCurrentPage() {
         title: tab.title,
         timestamp: Date.now()
       };
-      publish(TOPICS.page, pageInfo, true); // retain=true
-      await broadcastLog('page', pageInfo); // Show in sidebar
+      publish(TOPICS.page, pageInfo, true);
+      await broadcastLog('page', pageInfo);
     }
   } catch (e) {
     console.error('[Page] Error:', e);
   }
 }
 
-// Enable/disable sidebar based on URL (greyed out on non-Gemini)
+// Enable/disable sidebar based on URL
 async function updateSidebarState() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -598,9 +512,7 @@ async function updateSidebarState() {
       path: 'sidepanel.html',
       enabled: onGemini
     });
-  } catch (e) {
-    // Ignore
-  }
+  } catch (e) {}
 }
 
 // Listen for tab changes
