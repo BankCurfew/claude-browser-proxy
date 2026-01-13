@@ -6,21 +6,28 @@ const version = 'v' + chrome.runtime.getManifest().version;
 $('v').textContent = version;
 $('vb').textContent = version;
 
-// Format JSON nicely - show key info, collapse details
+// Format JSON nicely - show friendly action names, collapse details
 function formatMsg(msg) {
   if (typeof msg !== 'object') return msg;
 
-  // Extract key info for summary
+  // Action icons for friendly display
+  const actionIcons = {
+    'get_url': '🔗', 'get_text': '📄', 'get_html': '🌐', 'get_videos': '🎬',
+    'get_state': '📊', 'get_response': '📥', 'screenshot': '📸', 'click': '👆',
+    'type': '⌨️', 'key': '⌨️', 'find': '🔍', 'execute': '⚡', 'download': '💾',
+    'select_model': '🤖', 'wait_response': '⏳'
+  };
+
   const action = msg.action || msg.result?.action || '';
-  const id = msg.id || '';
-  const success = msg.result?.success ? '✅' : (msg.result?.error ? '❌' : '');
-  const summary = [action, success, id].filter(Boolean).join(' ') || 'data';
+  const icon = actionIcons[action] || '📦';
+  const success = msg.result?.success ? ' ✅' : (msg.result?.error ? ' ❌' : '');
+
+  // Friendly summary line
+  const summary = icon + ' ' + (action || 'data') + success;
 
   const str = JSON.stringify(msg, null, 2);
-  // If very short, show inline
-  if (str.length < 60) return '<code>' + JSON.stringify(msg) + '</code>';
-  // Otherwise collapsible (closed by default)
-  return '<details><summary>📦 ' + summary + '</summary><pre>' + str + '</pre></details>';
+  // Always collapsible with friendly summary
+  return '<details><summary>' + summary + '</summary><pre>' + str + '</pre></details>';
 }
 
 // Log function
