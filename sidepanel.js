@@ -150,15 +150,33 @@ $('b6').onclick = async () => {
   log('res', 'Cleared');
 };
 
-// Get Gemini Response button
+// Get Gemini Response button - directly from DOM
 $('b7').onclick = async () => {
   log('cmd', '📥 Getting Gemini response...');
   try {
-    const response = await chrome.runtime.sendMessage({
-      action: 'command',
-      command: { action: 'get_response', id: 'get_resp_' + Date.now() }
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url?.includes('gemini.google.com')) {
+      log('res', '❌ Not on Gemini page');
+      return;
+    }
+    // Get directly from DOM
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const el = document.querySelector('MESSAGE-CONTENT') || document.querySelector('message-content');
+        if (!el) return { error: 'No response found' };
+        const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
+        const last = all[all.length - 1];
+        return { answer: (last?.innerText || '').trim(), count: all.length };
+      }
     });
-    // Response will come via storage logs
+    const data = result[0]?.result;
+    if (data?.answer) {
+      showAnswer(data.answer);
+      log('res', '✅ Got ' + data.count + ' response(s)');
+    } else {
+      log('res', '❌ ' + (data?.error || 'No response'));
+    }
   } catch (e) {
     log('res', '❌ Error: ' + e.message);
   }
@@ -216,6 +234,11 @@ async function syncLogs() {
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.logs) syncLogs();
   if (changes.mqttConnected) checkStatus();
+  // Direct answer updates (bypass log sync issues)
+  if (changes.lastAnswer?.newValue) {
+    showAnswer(changes.lastAnswer.newValue);
+    log('res', '✅ Gemini responded!');
+  }
 });
 
 // Update Gemini state display

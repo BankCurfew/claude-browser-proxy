@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.4.1'; // Short version for badge display
+const VERSION = '2.4.2'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -312,6 +312,8 @@ async function handleCommand(topic, command) {
         if (result?.answer) {
           publish(TOPICS.answer, { answer: result.answer, timestamp: Date.now() }, true);
           await broadcastLog('answer', { answer: result.answer });
+          // Store directly for sidebar
+          await chrome.storage.local.set({ lastAnswer: result.answer, lastAnswerTime: Date.now() });
         }
         break;
 
@@ -355,6 +357,8 @@ async function handleCommand(topic, command) {
         if (result?.answer) {
           publish(TOPICS.answer, { answer: result.answer, timestamp: Date.now() }, true);
           await broadcastLog('answer', { answer: result.answer });
+          // Store directly for sidebar
+          await chrome.storage.local.set({ lastAnswer: result.answer, lastAnswerTime: Date.now() });
         }
         break;
 
