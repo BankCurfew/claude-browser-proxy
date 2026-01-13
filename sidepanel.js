@@ -232,7 +232,7 @@ async function updateState() {
 }
 
 // Track previous state for auto-fetch
-let prevLoading = false;
+let prevLoading = null; // null = first run, don't auto-fetch on init
 let prevResponseCount = 0;
 
 // Handle state from logs
@@ -251,7 +251,8 @@ function handleStateUpdate(state) {
   }
 
   // Auto-fetch response when: loading done AND new response appeared
-  if (prevLoading && !state.loading && count > prevResponseCount) {
+  // Skip on first run (prevLoading === null)
+  if (prevLoading === true && !state.loading && count > prevResponseCount) {
     log('res', '⏳ Auto-fetching response...');
     chrome.runtime.sendMessage({
       action: 'command',
@@ -309,10 +310,26 @@ async function syncLogsWithState() {
 // Replace sync function
 syncLogs = syncLogsWithState;
 
+// Load last answer from logs on startup
+async function loadLastAnswer() {
+  const data = await chrome.storage.local.get('logs');
+  const logs = data.logs || [];
+  // Find last answer in logs (scan backwards)
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const l = logs[i];
+    const answer = l.data?.answer || l.data?.result?.answer;
+    if (answer && typeof answer === 'string') {
+      showAnswer(answer);
+      break;
+    }
+  }
+}
+
 // Init
 checkStatus();
 updatePage();
 syncLogs();
+loadLastAnswer(); // Show last answer on startup
 updateState(); // Initial state check
 setInterval(checkStatus, 2000);
 setInterval(updatePage, 3000);
