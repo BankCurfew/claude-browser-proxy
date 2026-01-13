@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.3.2'; // Short version for badge display
+const VERSION = '2.3.3'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -151,13 +151,16 @@ async function handleCommand(topic, command) {
           func: () => {
             // Gemini State Detector
             const isLoading = () => {
+              // Only check actual progress spinner, NOT avatar animation (always visible)
               const spinner = document.querySelector('mat-mdc-progress-spinner.mdc-circular-progress--indeterminate');
-              const avatarSpinner = document.querySelector('.avatar_spinner_animation');
               if (spinner) {
                 const rect = spinner.getBoundingClientRect();
-                if (rect.top < window.innerHeight && rect.bottom > 0) return true;
+                // Must be in response area (not in sidebar/header)
+                if (rect.top > 100 && rect.top < window.innerHeight && rect.bottom > 0) return true;
               }
-              if (avatarSpinner && avatarSpinner.offsetParent !== null) return true;
+              // Also check for streaming indicator (text being typed)
+              const streaming = document.querySelector('.streaming-indicator, [data-streaming="true"]');
+              if (streaming) return true;
               return false;
             };
 
