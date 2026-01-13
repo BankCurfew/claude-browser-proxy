@@ -445,6 +445,34 @@ async function handleCommand(topic, command) {
         result = result[0]?.result;
         break;
 
+      case 'get_response':
+        // Get Gemini responses (same as sidebar button)
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
+            if (all.length === 0) return { error: 'No responses found' };
+            // Get latest response (last one)
+            const latest = all[all.length - 1];
+            const answer = (latest.innerText || '').trim();
+            return {
+              answer: answer,
+              count: all.length,
+              timestamp: Date.now()
+            };
+          }
+        });
+        result = result[0]?.result;
+        // Also publish to answer topic for convenience
+        if (result && result.answer) {
+          publish(TOPICS.answer, result, true);
+        }
+        break;
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
