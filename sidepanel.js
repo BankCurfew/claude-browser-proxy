@@ -165,10 +165,10 @@ $('b7').onclick = async () => {
       func: () => {
         const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
         if (all.length === 0) return { error: 'No responses found' };
-        // Get all responses as array
+        // Get all responses as array (full text)
         const responses = Array.from(all).map((el, i) => {
           const text = (el.innerText || '').trim();
-          return `[${i + 1}] ${text.substring(0, 500)}${text.length > 500 ? '...' : ''}`;
+          return `[${i + 1}] ${text}`;
         });
         return { answers: responses, count: all.length };
       }
