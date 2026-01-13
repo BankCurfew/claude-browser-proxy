@@ -268,9 +268,14 @@ async function syncLogsWithState() {
       if (id.startsWith('chat_')) return;
       if (id.startsWith('state_poll_')) return; // Hide state polls
       if (l.type === 'page') return;
-      if (l.type === 'answer') {
-        showAnswer(l.data?.answer || JSON.stringify(l.data));
-        log('res', '✅ Gemini responded!');
+
+      // Handle answer - both direct type and via result.answer
+      const answer = l.data?.answer || l.data?.result?.answer;
+      if (l.type === 'answer' || answer) {
+        if (answer && typeof answer === 'string') {
+          showAnswer(answer);
+          log('res', '✅ Gemini responded!');
+        }
         return;
       }
       log(l.type, l.data);
