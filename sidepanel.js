@@ -148,10 +148,23 @@ $('run').onclick = () => {
 };
 $('inp').onkeydown = (e) => { if (e.key === 'Enter') $('run').click(); };
 
-// Buttons - direct execution (no MQTT delay)
+// Helper: publish result to MQTT
+async function publishResult(action, result) {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'command',
+      command: { action: 'publish_result', data: { action, result, timestamp: Date.now() } }
+    });
+    return true;
+  } catch (e) { return false; }
+}
+
+// Buttons - direct execution + MQTT publish
 $('b1').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  log('res', '🔗 ' + (tab?.url || 'No URL'));
+  const url = tab?.url || 'No URL';
+  log('res', '🔗 ' + url);
+  if (await publishResult('get_url', { url, title: tab?.title })) log('res', '📤 Published');
 };
 $('b2').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -159,12 +172,15 @@ $('b2').onclick = async () => {
   const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body.innerText });
   const text = r[0]?.result || '';
   log('res', '📄 ' + text.substring(0, 200) + '...');
+  if (await publishResult('get_text', { text })) log('res', '📤 Published');
 };
 $('b3').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) { log('res', '❌ No tab'); return; }
-  const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.outerHTML.length });
-  log('res', '🌐 ' + (r[0]?.result || 0) + ' chars');
+  const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.outerHTML });
+  const html = r[0]?.result || '';
+  log('res', '🌐 ' + html.length + ' chars');
+  if (await publishResult('get_html', { html })) log('res', '📤 Published');
 };
 $('b4').onclick = () => cmd('get_videos');
 $('b5').onclick = () => cmd('screenshot');

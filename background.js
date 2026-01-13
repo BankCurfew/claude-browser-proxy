@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.0'; // Short version for badge display
+const VERSION = '2.6.1'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -472,8 +472,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     connect();
     sendResponse({ ok: true });
   } else if (msg.action === 'command') {
-    publish(TOPICS.command, msg.command);
-    sendResponse({ ok: true });
+    // Handle publish_result from sidebar (direct publish, no execution)
+    if (msg.command?.action === 'publish_result') {
+      const data = msg.command.data;
+      publish(TOPICS.response, { action: data.action, result: data.result, timestamp: data.timestamp, source: 'sidebar' }, true);
+      sendResponse({ ok: true });
+    } else {
+      publish(TOPICS.command, msg.command);
+      sendResponse({ ok: true });
+    }
   }
   return true;
 });
