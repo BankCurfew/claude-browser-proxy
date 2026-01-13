@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.3.4'; // Short version for badge display
+const VERSION = '2.3.5'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -267,7 +267,7 @@ async function handleCommand(topic, command) {
           func: (timeout) => {
             return new Promise((resolve) => {
               const startTime = Date.now();
-              const getResponses = () => document.querySelectorAll('message-content, [data-message-id], .model-response-text');
+              const getResponses = () => document.querySelectorAll('MESSAGE-CONTENT, message-content, [data-message-id], .model-response-text');
               const initialCount = getResponses().length;
               let lastText = '';
               let stableCount = 0;
@@ -320,7 +320,8 @@ async function handleCommand(topic, command) {
           target: { tabId: tab.id },
           func: () => {
             const selectors = [
-              'message-content',
+              'MESSAGE-CONTENT',     // Gemini uses uppercase custom element
+              'message-content',     // fallback lowercase
               '[data-message-id]',
               '.model-response-text',
               '.response-container',
