@@ -27,12 +27,13 @@ function formatMsg(msg) {
   const isCommand = msg.id && !msg.result; // Command being sent (no result yet)
 
   if (r.error) preview = '❌ ' + r.error;
-  else if (r.url) preview = r.url.substring(0, 50);
-  else if (r.title) preview = r.title.substring(0, 40);
-  else if (r.text) preview = r.text.substring(0, 50) + '...';
-  else if (r.html) preview = r.html.length + ' chars';
-  else if (r.answer) preview = r.answer.substring(0, 40) + '...';
-  else if (r.success) preview = '✅';
+  else if (r.url) preview = '← ' + r.url.substring(0, 45);
+  else if (msg.url) preview = '← ' + msg.url.substring(0, 45); // direct url
+  else if (r.title) preview = '← ' + r.title.substring(0, 40);
+  else if (r.text) preview = '← ' + r.text.substring(0, 45) + '...';
+  else if (r.html) preview = '← ' + r.html.length + ' chars';
+  else if (r.answer) preview = '← ' + r.answer.substring(0, 35) + '...';
+  else if (r.success) preview = '← ✅';
   else if (msg.text) preview = '→ ' + msg.text.substring(0, 35); // type command
   else if (msg.selector) preview = '→ ' + msg.selector.substring(0, 30); // click
   else if (isCommand) preview = '→ sending...'; // outgoing command
