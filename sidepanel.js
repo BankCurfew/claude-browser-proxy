@@ -231,6 +231,10 @@ async function updateState() {
   }
 }
 
+// Track previous state for auto-fetch
+let prevLoading = false;
+let prevResponseCount = 0;
+
 // Handle state from logs
 function handleStateUpdate(state) {
   if (!state || state.error) return; // Skip errors
@@ -245,6 +249,17 @@ function handleStateUpdate(state) {
     loadingEl.textContent = count > 0 ? '✅' : '⚪';
     loadingEl.title = count > 0 ? 'Done' : 'Ready';
   }
+
+  // Auto-fetch response when: loading done AND new response appeared
+  if (prevLoading && !state.loading && count > prevResponseCount) {
+    log('res', '⏳ Auto-fetching response...');
+    chrome.runtime.sendMessage({
+      action: 'command',
+      command: { action: 'get_response', id: 'auto_fetch_' + Date.now() }
+    }).catch(() => {});
+  }
+  prevLoading = state.loading;
+  prevResponseCount = count;
 
   // Update tool indicator
   const toolEl = $('st');
