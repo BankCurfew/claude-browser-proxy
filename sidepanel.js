@@ -15,8 +15,15 @@ function formatMsg(msg) {
     'get_url': '🔗', 'get_text': '📄', 'get_html': '🌐', 'get_videos': '🎬',
     'get_state': '📊', 'get_response': '📥', 'screenshot': '📸', 'click': '👆',
     'type': '⌨️', 'key': '⌨️', 'find': '🔍', 'execute': '⚡', 'download': '💾',
-    'select_model': '🤖', 'wait_response': '⏳'
+    'select_model': '🤖', 'wait_response': '⏳', 'publish': '📤'
   };
+
+  // Check if this is a publish log (from sidebar button)
+  if (msg.action && msg.result && !msg.id) {
+    const summary = '📤 ' + msg.action + ' — published';
+    const str = JSON.stringify(msg, null, 2);
+    return '<details><summary>' + summary + '</summary><pre>' + str + '</pre></details>';
+  }
 
   const action = msg.action || msg.result?.action || '';
   const icon = actionIcons[action] || '📦';
@@ -162,9 +169,9 @@ async function publishResult(action, result) {
 // Buttons - direct execution + MQTT publish
 $('b1').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const url = tab?.url || 'No URL';
-  log('res', '🔗 ' + url);
-  if (await publishResult('get_url', { url, title: tab?.title })) log('res', '📤 Published');
+  const result = { url: tab?.url || 'No URL', title: tab?.title || '' };
+  log('res', '🔗 ' + result.url);
+  if (await publishResult('get_url', result)) log('pub', { action: 'get_url', result });
 };
 $('b2').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -172,7 +179,7 @@ $('b2').onclick = async () => {
   const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body.innerText });
   const text = r[0]?.result || '';
   log('res', '📄 ' + text.substring(0, 200) + '...');
-  if (await publishResult('get_text', { text })) log('res', '📤 Published');
+  if (await publishResult('get_text', { text })) log('pub', { action: 'get_text', result: { text: text.substring(0, 500) + '...' } });
 };
 $('b3').onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -180,7 +187,7 @@ $('b3').onclick = async () => {
   const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.outerHTML });
   const html = r[0]?.result || '';
   log('res', '🌐 ' + html.length + ' chars');
-  if (await publishResult('get_html', { html })) log('res', '📤 Published');
+  if (await publishResult('get_html', { html })) log('pub', { action: 'get_html', result: { chars: html.length } });
 };
 $('b4').onclick = () => cmd('get_videos');
 $('b5').onclick = () => cmd('screenshot');
