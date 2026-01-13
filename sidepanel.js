@@ -148,10 +148,24 @@ $('run').onclick = () => {
 };
 $('inp').onkeydown = (e) => { if (e.key === 'Enter') $('run').click(); };
 
-// Buttons
-$('b1').onclick = () => cmd('get_url');
-$('b2').onclick = () => cmd('get_text');
-$('b3').onclick = () => cmd('get_html');
+// Buttons - direct execution (no MQTT delay)
+$('b1').onclick = async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  log('res', '🔗 ' + (tab?.url || 'No URL'));
+};
+$('b2').onclick = async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) { log('res', '❌ No tab'); return; }
+  const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body.innerText });
+  const text = r[0]?.result || '';
+  log('res', '📄 ' + text.substring(0, 200) + '...');
+};
+$('b3').onclick = async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) { log('res', '❌ No tab'); return; }
+  const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.outerHTML.length });
+  log('res', '🌐 ' + (r[0]?.result || 0) + ' chars');
+};
 $('b4').onclick = () => cmd('get_videos');
 $('b5').onclick = () => cmd('screenshot');
 $('b6').onclick = async () => {
