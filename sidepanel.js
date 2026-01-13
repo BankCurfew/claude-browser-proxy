@@ -6,11 +6,11 @@ const version = 'v' + chrome.runtime.getManifest().version;
 $('v').textContent = version;
 $('vb').textContent = version;
 
-// Format JSON nicely - show friendly action names, collapse details
+// Format JSON nicely - show friendly action names + preview
 function formatMsg(msg) {
   if (typeof msg !== 'object') return msg;
 
-  // Action icons for friendly display
+  // Action icons
   const actionIcons = {
     'get_url': '🔗', 'get_text': '📄', 'get_html': '🌐', 'get_videos': '🎬',
     'get_state': '📊', 'get_response': '📥', 'screenshot': '📸', 'click': '👆',
@@ -20,13 +20,21 @@ function formatMsg(msg) {
 
   const action = msg.action || msg.result?.action || '';
   const icon = actionIcons[action] || '📦';
-  const success = msg.result?.success ? ' ✅' : (msg.result?.error ? ' ❌' : '');
+  const r = msg.result || {};
 
-  // Friendly summary line
-  const summary = icon + ' ' + (action || 'data') + success;
+  // Build preview based on action/result
+  let preview = '';
+  if (r.error) preview = '❌ ' + r.error;
+  else if (r.url) preview = r.url.substring(0, 50);
+  else if (r.text) preview = r.text.substring(0, 50) + '...';
+  else if (r.html) preview = r.html.length + ' chars';
+  else if (r.answer) preview = r.answer.substring(0, 40) + '...';
+  else if (msg.text) preview = msg.text.substring(0, 40); // for type command
+  else if (msg.selector) preview = msg.selector.substring(0, 30);
+  else if (r.success) preview = '✅';
 
+  const summary = icon + ' ' + (action || 'data') + (preview ? ' — ' + preview : '');
   const str = JSON.stringify(msg, null, 2);
-  // Always collapsible with friendly summary
   return '<details><summary>' + summary + '</summary><pre>' + str + '</pre></details>';
 }
 
