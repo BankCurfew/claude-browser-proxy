@@ -24,14 +24,18 @@ function formatMsg(msg) {
 
   // Build preview based on action/result
   let preview = '';
+  const isCommand = msg.id && !msg.result; // Command being sent (no result yet)
+
   if (r.error) preview = '❌ ' + r.error;
   else if (r.url) preview = r.url.substring(0, 50);
+  else if (r.title) preview = r.title.substring(0, 40);
   else if (r.text) preview = r.text.substring(0, 50) + '...';
   else if (r.html) preview = r.html.length + ' chars';
   else if (r.answer) preview = r.answer.substring(0, 40) + '...';
-  else if (msg.text) preview = msg.text.substring(0, 40); // for type command
-  else if (msg.selector) preview = msg.selector.substring(0, 30);
   else if (r.success) preview = '✅';
+  else if (msg.text) preview = '→ ' + msg.text.substring(0, 35); // type command
+  else if (msg.selector) preview = '→ ' + msg.selector.substring(0, 30); // click
+  else if (isCommand) preview = '→ sending...'; // outgoing command
 
   const summary = icon + ' ' + (action || 'data') + (preview ? ' — ' + preview : '');
   const str = JSON.stringify(msg, null, 2);
