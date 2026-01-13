@@ -336,18 +336,31 @@ async function syncLogsWithState() {
 // Replace sync function
 syncLogs = syncLogsWithState;
 
-// Load last answer from logs on startup
-async function loadLastAnswer() {
-  const data = await chrome.storage.local.get('logs');
-  const logs = data.logs || [];
-  // Find last answer in logs (scan backwards)
-  for (let i = logs.length - 1; i >= 0; i--) {
-    const l = logs[i];
-    const answer = l.data?.answer || l.data?.result?.answer;
-    if (answer && typeof answer === 'string') {
-      showAnswer(answer);
-      break;
+// Auto-load responses from DOM on startup
+async function autoLoadResponses() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url?.includes('gemini.google.com')) return;
+
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
+        if (all.length === 0) return null;
+        const responses = Array.from(all).map((el, i) => {
+          const text = (el.innerText || '').trim();
+          return `[${i + 1}] ${text}`;
+        });
+        return { answers: responses, count: all.length };
+      }
+    });
+    const data = result[0]?.result;
+    if (data?.answers) {
+      showAnswer(data.answers.join('\n\n---\n\n'));
+      log('res', '✅ Loaded ' + data.count + ' response(s)');
     }
+  } catch (e) {
+    // Ignore errors on startup
   }
 }
 
@@ -355,7 +368,7 @@ async function loadLastAnswer() {
 checkStatus();
 updatePage();
 syncLogs();
-loadLastAnswer(); // Show last answer on startup
+autoLoadResponses(); // Auto-load from DOM on startup
 updateState(); // Initial state check
 setInterval(checkStatus, 2000);
 setInterval(updatePage, 3000);
