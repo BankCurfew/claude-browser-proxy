@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.4'; // Short version for badge display
+const VERSION = '2.6.6'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -213,6 +213,9 @@ async function handleCommand(topic, command) {
         break;
 
       case 'type':
+        // Smart default selector for Gemini input
+        const typeSelector = command.selector || 'textarea, [contenteditable="true"], input[type="text"]';
+        const typeText = command.text || '';
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (sel, text) => {
@@ -227,11 +230,11 @@ async function handleCommand(topic, command) {
                 el.value = text;
               }
               el.dispatchEvent(new Event('input', { bubbles: true }));
-              return { success: true };
+              return { success: true, selector: sel };
             }
-            return { error: 'Not found' };
+            return { error: 'Element not found', selector: sel };
           },
-          args: [command.selector, command.text]
+          args: [typeSelector, typeText]
         });
         result = result[0]?.result;
         break;
