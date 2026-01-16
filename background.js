@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.6'; // Short version for badge display
+const VERSION = '2.6.7'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -214,7 +214,7 @@ async function handleCommand(topic, command) {
 
       case 'type':
         // Smart default selector for Gemini input
-        const typeSelector = command.selector || 'textarea, [contenteditable="true"], input[type="text"]';
+        const typeSelector = command.selector || '[contenteditable="true"], textarea, input[type="text"]';
         const typeText = command.text || '';
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -224,12 +224,16 @@ async function handleCommand(topic, command) {
               el.focus();
               if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
                 el.value = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
               } else if (el.isContentEditable || el.getAttribute('contenteditable')) {
-                el.textContent = text;
+                // Clear existing content and use execCommand for rich editors
+                el.innerHTML = '';
+                document.execCommand('insertText', false, text);
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
               } else {
                 el.value = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
               }
-              el.dispatchEvent(new Event('input', { bubbles: true }));
               return { success: true, selector: sel };
             }
             return { error: 'Element not found', selector: sel };
