@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.7'; // Short version for badge display
+const VERSION = '2.6.8'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -478,6 +478,46 @@ async function handleCommand(topic, command) {
         if (result && result.answer) {
           publish(TOPICS.answer, result, true);
         }
+        break;
+
+      case 'chat':
+        // All-in-one: click input, type text, press Enter
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+        const chatText = command.text || '';
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (text) => {
+            // Find and click the prompt input
+            const input = document.querySelector('div[aria-label="Enter a prompt here"], .ql-editor[contenteditable="true"]');
+            if (!input) return { error: 'Prompt input not found' };
+
+            // Focus and click
+            input.focus();
+            input.click();
+
+            // Clear existing content
+            input.innerHTML = '';
+
+            // Insert text using execCommand (works with contenteditable)
+            document.execCommand('insertText', false, text);
+
+            // Dispatch input event
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+
+            // Find and click send button
+            setTimeout(() => {
+              const sendBtn = document.querySelector('button[aria-label="Send message"], button.send-button, [data-test-id="send-button"]');
+              if (sendBtn) sendBtn.click();
+            }, 100);
+
+            return { success: true, text: text };
+          },
+          args: [chatText]
+        });
+        result = result[0]?.result;
         break;
 
       default:
