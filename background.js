@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.6.8'; // Short version for badge display
+const VERSION = '2.9.39'; // Short version for badge display
 const MQTT_URL = 'ws://localhost:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -16,6 +16,7 @@ const TOPICS = {
 
 let client = null;
 let isConnected = false;
+let connectedAt = 0; // Track connection time to ignore stale retained messages
 
 // Connect to MQTT broker with LWT
 function connect() {
@@ -36,6 +37,7 @@ function connect() {
   client.on('connect', () => {
     console.log('[MQTT] Connected!');
     isConnected = true;
+    connectedAt = Date.now(); // Track connection time
     updateBadge(true);
 
     // Subscribe to command topic
@@ -56,6 +58,13 @@ function connect() {
     console.log('[MQTT] Received:', topic);
     try {
       const command = JSON.parse(message.toString());
+
+      // Ignore stale retained messages (older than our connection)
+      if (command.ts && command.ts < connectedAt) {
+        console.log('[MQTT] Ignoring stale message (ts:', command.ts, '< connected:', connectedAt, ')');
+        return;
+      }
+
       handleCommand(topic, command);
     } catch (e) {
       handleCommand(topic, message.toString());
@@ -121,9 +130,357 @@ async function handleCommand(topic, command) {
   let result;
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) throw new Error('No active tab');
+    // === TAB MANAGEMENT ACTIONS (don't require existing Gemini tab) ===
+    switch (command.action) {
+      case 'transcribe': {
+        // All-in-one: create new tab + wait + send transcribe prompt
+        const videoUrl = command.url || command.video;
+        if (!videoUrl) {
+          result = { error: 'url or video parameter required' };
+          publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+          return;
+        }
 
+        // 1. Create new Gemini tab
+        const transcribeTab = await chrome.tabs.create({
+          url: 'https://gemini.google.com/app',
+          active: true
+        });
+
+        // 2. Wait for page to load
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // 3. Send chat prompt
+        const prompt = command.prompt || `Transcribe this YouTube video with timestamps:
+
+${videoUrl}
+
+Format:
+
+[00:00]
+Text spoken here.
+
+[01:00]
+Next section.
+
+Use double newlines between timestamps!`;
+
+        await chrome.scripting.executeScript({
+          target: { tabId: transcribeTab.id },
+          func: (text) => {
+            const selectors = [
+              'rich-textarea .ql-editor',
+              'rich-textarea [contenteditable="true"]',
+              '.ql-editor[contenteditable="true"]',
+              '[contenteditable="true"]'
+            ];
+            for (const sel of selectors) {
+              const el = document.querySelector(sel);
+              if (el) {
+                el.focus();
+                el.innerHTML = text.replace(/\n/g, '<br>');
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                setTimeout(() => {
+                  const sendBtn = document.querySelector('button[aria-label*="Send"], button.send-button, button[class*="send"]');
+                  if (sendBtn) sendBtn.click();
+                }, 500);
+                return { success: true };
+              }
+            }
+            return { error: 'Input not found' };
+          },
+          args: [prompt]
+        });
+
+        result = { success: true, tabId: transcribeTab.id, video: videoUrl };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+      }
+
+      case 'create_tab': {
+        // Create new Gemini tab and return its ID
+        const createdTab = await chrome.tabs.create({
+          url: command.url || 'https://gemini.google.com/app',
+          active: command.active !== false  // default: make active
+        });
+        result = {
+          tabId: createdTab.id,
+          url: createdTab.pendingUrl || createdTab.url,
+          success: true
+        };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+      }
+
+      case 'list_tabs':
+        // List all Gemini tabs
+        const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+        result = {
+          tabs: geminiTabs.map(t => ({
+            id: t.id,
+            title: t.title,
+            url: t.url,
+            active: t.active,
+            windowId: t.windowId
+          })),
+          count: geminiTabs.length,
+          success: true
+        };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+
+      case 'new_tab': {
+        // Create a new Gemini tab
+        const url = command.url || 'https://gemini.google.com/app';
+        const tab = await chrome.tabs.create({ url, active: true });
+        result = {
+          success: true,
+          tabId: tab.id,
+          url,
+          message: 'New tab created'
+        };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+      }
+
+      case 'focus_tab':
+        // Focus a specific tab
+        if (!command.tabId) throw new Error('tabId required for focus_tab');
+        await chrome.tabs.update(command.tabId, { active: true });
+        const focusedTab = await chrome.tabs.get(command.tabId);
+        await chrome.windows.update(focusedTab.windowId, { focused: true });
+        result = { success: true, tabId: command.tabId };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+
+      case 'inject_badge':
+        // DEBUG: Inject badge into specific tab
+        if (!command.tabId) throw new Error('tabId required');
+        await chrome.scripting.executeScript({
+          target: { tabId: command.tabId },
+          func: (id, msg) => {
+            let badge = document.getElementById('claude-tab-badge');
+            if (!badge) {
+              badge = document.createElement('div');
+              badge.id = 'claude-tab-badge';
+              badge.style.cssText = 'position:fixed;top:10px;right:10px;background:#22c55e;color:white;padding:12px 20px;border-radius:8px;font-family:monospace;font-size:16px;font-weight:bold;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+              document.body.appendChild(badge);
+            }
+            badge.textContent = 'TAB ' + id + (msg ? ': ' + msg : '');
+          },
+          args: [command.tabId, command.text || '']
+        });
+        result = { success: true, tabId: command.tabId, injected: true };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+
+      case 'inject_response_actions':
+        // Inject custom buttons after the last button in each response
+        if (!command.tabId) throw new Error('tabId required');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: command.tabId },
+          func: (actions) => {
+            let injected = 0;
+            const debug = [];
+
+            // Find all model-response elements
+            const modelResponses = document.querySelectorAll('model-response');
+            debug.push('Found ' + modelResponses.length + ' model-responses');
+
+            modelResponses.forEach((modelResponse, index) => {
+              // Skip if already injected
+              if (modelResponse.querySelector('.claude-response-actions')) return;
+
+              // Find ALL buttons, get the last few (action bar is at bottom)
+              const allButtons = Array.from(modelResponse.querySelectorAll('button'));
+              debug.push('Response ' + index + ': ' + allButtons.length + ' buttons');
+
+              if (allButtons.length < 3) return;
+
+              // Last button should be the ⋮ menu
+              const lastBtn = allButtons[allButtons.length - 1];
+              const actionBar = lastBtn.parentElement;
+
+              // Create custom buttons container
+              const customContainer = document.createElement('div');
+              customContainer.className = 'claude-response-actions';
+              customContainer.style.cssText = 'display:inline-flex;gap:8px;margin-left:12px;align-items:center;';
+
+              actions.forEach(action => {
+                const btn = document.createElement('button');
+                btn.textContent = action.label;
+                btn.title = action.title || action.label;
+                btn.style.cssText = 'background:transparent;border:none;color:#9aa0a6;cursor:pointer;font-size:16px;padding:4px;opacity:0.7;transition:opacity 0.2s;';
+                btn.onmouseenter = () => btn.style.opacity = '1';
+                btn.onmouseleave = () => btn.style.opacity = '0.7';
+                btn.onclick = () => {
+                  const msgContent = modelResponse.querySelector('MESSAGE-CONTENT, message-content');
+                  window.postMessage({
+                    type: 'claude-response-action',
+                    action: action.id,
+                    responseIndex: index,
+                    text: msgContent?.innerText?.substring(0, 500) || ''
+                  }, '*');
+                };
+                customContainer.appendChild(btn);
+              });
+
+              // Insert after the last button
+              lastBtn.after(customContainer);
+              injected++;
+              debug.push('Response ' + index + ': injected');
+            });
+
+            return { success: true, injected, total: modelResponses.length, debug };
+          },
+          args: [command.actions || [
+            { id: 'save', label: '💾', title: 'Save response' },
+            { id: 'copy', label: '📋', title: 'Copy to clipboard' }
+          ]]
+        });
+        result = result[0]?.result;
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+
+      case 'auto_inject_start':
+        // Start auto-injection loop using MutationObserver
+        if (!command.tabId) throw new Error('tabId required');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: command.tabId },
+          func: (actions) => {
+            // Don't start twice
+            if (window._claudeAutoInject) return { already: true };
+
+            const injectButtons = () => {
+              const modelResponses = document.querySelectorAll('model-response');
+              let injected = 0;
+
+              modelResponses.forEach((modelResponse, index) => {
+                if (modelResponse.querySelector('.claude-response-actions')) return;
+
+                const allButtons = Array.from(modelResponse.querySelectorAll('button'));
+                if (allButtons.length < 3) return;
+
+                const lastBtn = allButtons[allButtons.length - 1];
+
+                const container = document.createElement('div');
+                container.className = 'claude-response-actions';
+                container.style.cssText = 'display:inline-flex;gap:8px;margin-left:12px;align-items:center;';
+
+                actions.forEach(action => {
+                  const btn = document.createElement('button');
+                  btn.textContent = action.label;
+                  btn.title = action.title || action.label;
+                  btn.style.cssText = 'background:transparent;border:none;color:#9aa0a6;cursor:pointer;font-size:16px;padding:4px;opacity:0.7;transition:opacity 0.2s;';
+                  btn.onmouseenter = () => btn.style.opacity = '1';
+                  btn.onmouseleave = () => btn.style.opacity = '0.7';
+                  btn.onclick = () => {
+                    const msgContent = modelResponse.querySelector('MESSAGE-CONTENT, message-content');
+                    window.postMessage({
+                      type: 'claude-response-action',
+                      action: action.id,
+                      responseIndex: index,
+                      text: msgContent?.innerText?.substring(0, 500) || ''
+                    }, '*');
+                  };
+                  container.appendChild(btn);
+                });
+
+                lastBtn.after(container);
+                injected++;
+              });
+
+              return injected;
+            };
+
+            // Initial inject
+            const initial = injectButtons();
+
+            // Watch for new responses
+            const observer = new MutationObserver(() => {
+              injectButtons();
+            });
+
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true
+            });
+
+            window._claudeAutoInject = { observer, actions };
+            return { started: true, initial };
+          },
+          args: [command.actions || [
+            { id: 'save', label: '💾', title: 'Save' },
+            { id: 'learn', label: '📚', title: 'Learn' }
+          ]]
+        });
+        result = result[0]?.result;
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+
+      case 'auto_inject_stop':
+        // Stop auto-injection
+        if (!command.tabId) throw new Error('tabId required');
+        result = await chrome.scripting.executeScript({
+          target: { tabId: command.tabId },
+          func: () => {
+            if (window._claudeAutoInject) {
+              window._claudeAutoInject.observer.disconnect();
+              delete window._claudeAutoInject;
+              return { stopped: true };
+            }
+            return { notRunning: true };
+          }
+        });
+        result = result[0]?.result;
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+    }
+
+    // === RESOLVE TARGET TAB ===
+    let tab;
+    if (command.tabId) {
+      // Use specific tab if provided - simple and direct
+      tab = await chrome.tabs.get(command.tabId);
+      if (!tab) throw new Error('Tab not found: ' + command.tabId);
+      console.log('[Tab] Using specific tab:', command.tabId, tab.url);
+      // INJECT TABID INTO PAGE FOR DEBUGGING
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (id) => {
+          let badge = document.getElementById('claude-tab-badge');
+          if (!badge) {
+            badge = document.createElement('div');
+            badge.id = 'claude-tab-badge';
+            badge.style.cssText = 'position:fixed;top:10px;right:10px;background:#22c55e;color:white;padding:8px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:99999;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+            document.body.appendChild(badge);
+          }
+          badge.textContent = 'TAB: ' + id;
+          badge.style.animation = 'none';
+          badge.offsetHeight; // Trigger reflow
+          badge.style.animation = 'pulse 0.5s';
+        },
+        args: [tab.id]
+      });
+    } else {
+      // Find most recently active Gemini tab
+      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+      if (geminiTabs.length > 0) {
+        // Sort by lastAccessed (most recent first)
+        geminiTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+        tab = geminiTabs[0];
+      }
+      if (!tab) {
+        [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      }
+    }
+
+    if (!tab) throw new Error('No tab found');
+    if (!tab.url?.includes('gemini.google.com')) {
+      throw new Error('Tab is not Gemini. Please open gemini.google.com or use create_tab');
+    }
+
+    // === GEMINI TAB ACTIONS ===
     switch (command.action) {
       case 'get_html':
         result = await chrome.scripting.executeScript({
@@ -208,6 +565,28 @@ async function handleCommand(topic, command) {
             return { error: 'Not found' };
           },
           args: [command.selector]
+        });
+        result = result[0]?.result;
+        break;
+
+      case 'clickText':
+        // Click element by text content (case-insensitive, partial match)
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (searchText, exactMatch) => {
+            const text = searchText.toLowerCase();
+            const clickable = document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], a, [onclick], [tabindex]');
+            for (const el of clickable) {
+              const elText = el.textContent?.trim().toLowerCase() || '';
+              const matches = exactMatch ? elText === text : elText.includes(text);
+              if (matches) {
+                el.click();
+                return { success: true, text: el.textContent?.trim().substring(0, 50), tag: el.tagName };
+              }
+            }
+            return { error: 'No element with text: ' + searchText };
+          },
+          args: [command.text, command.exact || false]
         });
         result = result[0]?.result;
         break;
@@ -452,6 +831,65 @@ async function handleCommand(topic, command) {
         result = result[0]?.result;
         break;
 
+      case 'select_mode':
+        // Select Gemini mode (Deep Research, etc) - use coordinates to click
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (modeName) => {
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const debug = {};
+
+            // Find Tools button
+            let toolsBtn = allBtns.find(b => b.textContent?.trim() === 'Tools');
+            if (!toolsBtn) {
+              return { error: 'Tools button not found' };
+            }
+
+            toolsBtn.click();
+            await new Promise(r => setTimeout(r, 800));
+
+            // Find "Deep Research" text element (leaf node)
+            const allElements = document.querySelectorAll('*');
+            let textEl = null;
+
+            for (const el of allElements) {
+              if (el.textContent?.trim() === 'Deep Research' && el.children.length === 0) {
+                textEl = el;
+                break;
+              }
+            }
+
+            if (!textEl) {
+              return { error: 'Deep Research text not found' };
+            }
+
+            // Get bounding rect and click at center
+            const rect = textEl.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+
+            debug.rect = { x, y };
+
+            const clickTarget = document.elementFromPoint(x, y);
+            debug.clickTarget = { tag: clickTarget?.tagName, class: clickTarget?.className?.substring(0, 50) };
+
+            if (clickTarget) {
+              const eventInit = { bubbles: true, cancelable: true, clientX: x, clientY: y };
+              clickTarget.dispatchEvent(new MouseEvent('mousedown', eventInit));
+              clickTarget.dispatchEvent(new MouseEvent('mouseup', eventInit));
+              clickTarget.dispatchEvent(new MouseEvent('click', eventInit));
+
+              console.log('[Claude Proxy] Clicked at', x, y, clickTarget.tagName);
+              return { success: true, mode: 'Deep Research', debug };
+            }
+
+            return { error: 'No element at coordinates', debug };
+          },
+          args: [command.mode || 'Deep Research']
+        });
+        result = result[0]?.result;
+        break;
+
       case 'get_response':
         // Get Gemini responses (same as sidebar button)
         if (!tab.url?.includes('gemini.google.com')) {
@@ -481,7 +919,7 @@ async function handleCommand(topic, command) {
         break;
 
       case 'chat':
-        // All-in-one: click input, type text, press Enter
+        // SMOOTH: Fast chat - direct text insert + Enter
         if (!tab.url?.includes('gemini.google.com')) {
           result = { error: 'Not on Gemini page' };
           break;
@@ -490,34 +928,60 @@ async function handleCommand(topic, command) {
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (text) => {
-            // Find and click the prompt input
-            const input = document.querySelector('div[aria-label="Enter a prompt here"], .ql-editor[contenteditable="true"]');
-            if (!input) return { error: 'Prompt input not found' };
+            try {
+              // Try multiple selectors for Gemini input
+              const selectors = [
+                'rich-textarea .ql-editor',
+                'rich-textarea [contenteditable="true"]',
+                '.ql-editor[contenteditable="true"]',
+                'div[aria-label="Enter a prompt here"]',
+                '[data-placeholder*="prompt"]',
+                '[contenteditable="true"]'
+              ];
 
-            // Focus and click
-            input.focus();
-            input.click();
+              let input = null;
+              for (const sel of selectors) {
+                input = document.querySelector(sel);
+                if (input) break;
+              }
 
-            // Clear existing content
-            input.innerHTML = '';
+              if (!input) {
+                return { error: 'Input not found', selectors: selectors.length };
+              }
 
-            // Insert text using execCommand (works with contenteditable)
-            document.execCommand('insertText', false, text);
+              // Focus and clear
+              input.focus();
 
-            // Dispatch input event
-            input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+              // Set text directly (works better than execCommand)
+              if (input.innerHTML !== undefined) {
+                input.innerHTML = '<p>' + text + '</p>';
+              } else {
+                input.textContent = text;
+              }
 
-            // Find and click send button
-            setTimeout(() => {
-              const sendBtn = document.querySelector('button[aria-label="Send message"], button.send-button, [data-test-id="send-button"]');
-              if (sendBtn) sendBtn.click();
-            }, 100);
+              // Dispatch input event to trigger Gemini's handlers
+              input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
 
-            return { success: true, text: text };
+              // Small delay then press Enter
+              setTimeout(() => {
+                // Find and click send button as backup
+                const sendBtn = document.querySelector('button[aria-label*="Send"], button[data-test-id="send-button"], .send-button');
+                if (sendBtn) {
+                  sendBtn.click();
+                } else {
+                  // Try Enter key
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                }
+              }, 100);
+
+              return { success: true, sent: text.substring(0, 50) };
+            } catch (e) {
+              return { error: e.message };
+            }
           },
           args: [chatText]
         });
-        result = result[0]?.result;
+        result = result[0]?.result || { error: 'Script returned null' };
         break;
 
       default:
@@ -527,20 +991,24 @@ async function handleCommand(topic, command) {
     result = { error: err.message };
   }
 
-  // Send response (retained)
+  // Send response (retained) - include tabId for tracking
   const response = {
     id: command.id,
     action: command.action,
-    result: result,
+    ...result,  // Flatten result into response
+    tabId: tab?.id,  // Include which tab was used
     timestamp: Date.now()
   };
   publish(TOPICS.response, response, true);
   await broadcastLog('res', response);
 }
 
-// Listen for messages from popup/sidepanel
+// Listen for messages from popup/sidepanel/content scripts
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === 'status') {
+  if (msg.action === 'getTabId') {
+    // Content script requesting its own tab ID
+    sendResponse({ tabId: sender.tab?.id });
+  } else if (msg.action === 'status') {
     sendResponse({ connected: isConnected });
   } else if (msg.action === 'reconnect') {
     if (client) client.end();
@@ -563,6 +1031,125 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.action === 'command') {
     publish(TOPICS.command, msg.command);
     sendResponse({ ok: true });
+  } else if (msg.action === 'select_model') {
+    // Model selection from content script
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ error: 'No tab ID' });
+      return true;
+    }
+    chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (modelName) => {
+        const allBtns = Array.from(document.querySelectorAll('button'));
+        let dropdownBtn = allBtns.find(b => b.className.includes('input-area-switch'));
+        if (!dropdownBtn) dropdownBtn = allBtns.find(b => b.textContent.trim().match(/^(Pro|Fast|Thinking)$/));
+        if (!dropdownBtn) dropdownBtn = allBtns.find(b => b.parentElement?.className?.includes('pill-ui'));
+        if (!dropdownBtn) return { error: 'Model dropdown not found' };
+
+        dropdownBtn.click();
+        await new Promise(r => setTimeout(r, 600));
+
+        const modelMap = { 'fast': 'Fast', 'thinking': 'Thinking', 'pro': 'Pro' };
+        const targetModel = modelMap[modelName.toLowerCase()] || modelName;
+
+        // Look for clickable elements in the dropdown
+        const options = document.querySelectorAll('[role="option"], [role="menuitem"], [role="listbox"] button, .mdc-list-item, [class*="option"]');
+        for (const opt of options) {
+          const text = opt.textContent?.trim();
+          // Match if text starts with model name or first line matches
+          if (text?.startsWith(targetModel) || text?.split('\n')[0]?.trim() === targetModel) {
+            opt.click();
+            return { success: true, model: targetModel };
+          }
+        }
+
+        // Fallback: find any clickable with exact model name at start
+        const allClickables = document.querySelectorAll('button, div[role="option"], div[tabindex], [class*="list-item"]');
+        for (const el of allClickables) {
+          const text = el.textContent?.trim();
+          if (text?.startsWith(targetModel) && el !== dropdownBtn) {
+            el.click();
+            return { success: true, model: targetModel };
+          }
+        }
+        return { error: 'Model option not found: ' + targetModel };
+      },
+      args: [msg.model || 'pro']
+    }).then(results => {
+      sendResponse(results[0]?.result || { error: 'Script failed' });
+    }).catch(e => {
+      sendResponse({ error: e.message });
+    });
+    return true; // Keep channel open for async response
+  } else if (msg.action === 'select_mode') {
+    // Mode selection from content script (Deep Research, etc)
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ error: 'No tab ID' });
+      return true;
+    }
+    chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (modeName) => {
+        const allBtns = Array.from(document.querySelectorAll('button'));
+        const debug = {};
+
+        // Find Tools button
+        let toolsBtn = allBtns.find(b => b.textContent?.trim() === 'Tools');
+        if (!toolsBtn) {
+          return { error: 'Tools button not found' };
+        }
+
+        toolsBtn.click();
+        await new Promise(r => setTimeout(r, 800));
+
+        // Find "Deep Research" text element
+        const allElements = document.querySelectorAll('*');
+        let textEl = null;
+
+        for (const el of allElements) {
+          if (el.textContent?.trim() === 'Deep Research' && el.children.length === 0) {
+            textEl = el;
+            break;
+          }
+        }
+
+        if (!textEl) {
+          return { error: 'Deep Research text not found' };
+        }
+
+        // Get bounding rect and click at center using elementFromPoint
+        const rect = textEl.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+
+        debug.rect = { x, y, width: rect.width, height: rect.height };
+
+        // Find element at that point and click it
+        const clickTarget = document.elementFromPoint(x, y);
+        debug.clickTarget = { tag: clickTarget?.tagName, class: clickTarget?.className?.substring(0, 50) };
+
+        if (clickTarget) {
+          // Dispatch full mouse event sequence
+          const eventInit = { bubbles: true, cancelable: true, clientX: x, clientY: y };
+          clickTarget.dispatchEvent(new MouseEvent('mousedown', eventInit));
+          clickTarget.dispatchEvent(new MouseEvent('mouseup', eventInit));
+          clickTarget.dispatchEvent(new MouseEvent('click', eventInit));
+
+          console.log('[Claude Proxy] Clicked at', x, y, clickTarget.tagName);
+          return { success: true, mode: 'Deep Research', debug };
+        }
+
+        return { error: 'No element at coordinates', debug };
+      },
+      args: [msg.mode || 'Deep Research']
+    }).then(results => {
+      sendResponse(results[0]?.result || { error: 'Script failed' });
+    }).catch(e => {
+      sendResponse({ error: e.message });
+    });
+    return true;
   }
   return true;
 });

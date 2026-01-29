@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini Proxy Debug</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+    h1 { color: #00d9ff; margin-bottom: 10px; }
+    .status { padding: 8px 16px; border-radius: 20px; display: inline-block; margin-bottom: 20px; }
+    .status.online { background: #22c55e; color: #000; }
+    .status.offline { background: #ef4444; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .panel { background: #16213e; border-radius: 12px; padding: 16px; }
+    .panel h2 { color: #00d9ff; font-size: 14px; margin-bottom: 12px; text-transform: uppercase; }
+    .log { height: 300px; overflow-y: auto; font-family: 'Monaco', 'Menlo', monospace; font-size: 12px; background: #0f0f23; border-radius: 8px; padding: 10px; }
+    .log-entry { padding: 4px 0; border-bottom: 1px solid #333; }
+    .log-entry.cmd { color: #fbbf24; }
+    .log-entry.res { color: #22c55e; }
+    .log-entry.state { color: #666; }
+    .log-entry .time { color: #888; margin-right: 8px; }
+    .log-entry .topic { color: #00d9ff; margin-right: 8px; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+
+    .controls { margin-top: 20px; }
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+    button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.2s; }
+    button:hover { transform: translateY(-2px); }
+    .btn-model { background: #3b82f6; color: white; }
+    .btn-action { background: #8b5cf6; color: white; }
+    .btn-danger { background: #ef4444; color: white; }
+
+    .input-row { display: flex; gap: 10px; margin-top: 10px; }
+    input, textarea { flex: 1; padding: 10px; border: none; border-radius: 8px; background: #0f0f23; color: #eee; font-family: inherit; }
+    textarea { min-height: 80px; font-family: monospace; }
+
+    .quick-info { display: flex; gap: 20px; margin-bottom: 20px; }
+    .info-card { background: #16213e; padding: 12px 20px; border-radius: 8px; }
+    .info-card label { color: #888; font-size: 12px; display: block; }
+    .info-card value { font-size: 18px; font-weight: bold; }
+    .connection-info { color: #888; font-size: 12px; margin: 8px 0 16px 0; }
+    .connection-info code { background: #0f0f23; padding: 4px 8px; border-radius: 4px; color: #00d9ff; }
+  </style>
+</head>
+<body>
+  <h1>🔮 Gemini Proxy Debug Console</h1>
+  <div class="status offline" id="status">Disconnected</div>
+  <div class="connection-info">
+    <code id="mqttUrl"></code> |
+    <code id="mqttTopics"></code>
+  </div>
+
+  <div class="quick-info">
+    <div class="info-card">
+      <label>Version</label>
+      <value id="version">-</value>
+    </div>
+    <div class="info-card">
+      <label>Current Page</label>
+      <value id="page">-</value>
+    </div>
+    <div class="info-card">
+      <label>Responses</label>
+      <value id="responses">0</value>
+    </div>
+    <div class="info-card" style="flex: 2;">
+      <label>Target Tab</label>
+      <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
+        <select id="tabSelect" style="flex: 1; padding: 8px; border-radius: 6px; background: #0f0f23; color: #eee; border: 1px solid #333;">
+          <option value="">Auto (most recent)</option>
+        </select>
+        <button class="btn-action" onclick="refreshTabs()" style="padding: 8px 12px;">🔄</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>📥 Commands Sent</h2>
+      <div class="log" id="cmdLog"></div>
+    </div>
+    <div class="panel">
+      <h2>📤 Responses</h2>
+      <div class="log" id="resLog"></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="panel">
+      <h2>🎮 Quick Actions</h2>
+
+      <div class="btn-row">
+        <button class="btn-model" onclick="selectModel('fast')">⚡ Fast</button>
+        <button class="btn-model" onclick="selectModel('pro')">🧠 Pro</button>
+        <button class="btn-model" onclick="selectModel('thinking')">💭 Think</button>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-action" onclick="send({action:'get_url'})">Get URL</button>
+        <button class="btn-action" onclick="send({action:'get_text'})">Get Text</button>
+        <button class="btn-action" onclick="send({action:'get_state'})">Get State</button>
+        <button class="btn-action" onclick="send({action:'get_html'})">Get HTML</button>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-danger" onclick="clearLogs()">Clear Logs</button>
+      </div>
+
+      <div class="input-row">
+        <input type="text" id="chatInput" placeholder="Type message to send to Gemini..." />
+        <button class="btn-action" onclick="sendChat()">Send Chat</button>
+      </div>
+
+      <div class="input-row">
+        <input type="text" id="clickSelector" placeholder="CSS selector to click..." />
+        <button class="btn-action" onclick="clickSelector()">Click</button>
+      </div>
+
+      <div class="input-row">
+        <input type="text" id="clickTextInput" placeholder="Text to click..." />
+        <button class="btn-action" onclick="clickTextInput()">Click Text</button>
+      </div>
+
+      <h2 style="margin-top: 20px;">📝 Custom Command (JSON)</h2>
+      <textarea id="customCmd" placeholder='{"action": "click", "selector": "button"}'></textarea>
+      <button class="btn-action" style="margin-top: 10px;" onclick="sendCustom()">Send Custom</button>
+    </div>
+  </div>
+
+  <script>
+    const MQTT_URL = 'ws://localhost:9001';
+    const TOPICS = {
+      command: 'claude/browser/command',
+      response: 'claude/browser/response',
+      page: 'claude/browser/page',
+      status: 'claude/browser/status',
+      state: 'claude/browser/state'
+    };
+
+    let client;
+    let cmdId = 0;
+    let responseCount = 0;
+
+    function connect() {
+      client = mqtt.connect(MQTT_URL, {
+        clientId: 'debug-console-' + Date.now(),
+        reconnectPeriod: 3000
+      });
+
+      client.on('connect', () => {
+        document.getElementById('status').className = 'status online';
+        document.getElementById('status').textContent = 'Connected to MQTT';
+
+        // Subscribe to all topics
+        Object.values(TOPICS).forEach(topic => {
+          client.subscribe(topic);
+        });
+
+        // Auto-refresh tab list
+        setTimeout(() => refreshTabs(), 500);
+      });
+
+      client.on('close', () => {
+        document.getElementById('status').className = 'status offline';
+        document.getElementById('status').textContent = 'Disconnected';
+      });
+
+      client.on('message', (topic, message) => {
+        try {
+          const data = JSON.parse(message.toString());
+          handleMessage(topic, data);
+        } catch (e) {
+          console.error('Parse error:', e);
+        }
+      });
+    }
+
+    function handleMessage(topic, data) {
+      const time = new Date().toLocaleTimeString();
+
+      if (topic === TOPICS.status) {
+        document.getElementById('version').textContent = data.version || '-';
+      } else if (topic === TOPICS.page) {
+        document.getElementById('page').textContent = data.title || data.url || '-';
+      } else if (topic === TOPICS.response) {
+        // Skip state polls for cleaner logs
+        if (data.action === 'get_state' && data.id?.startsWith('state_poll')) {
+          return;
+        }
+
+        // Handle list_tabs response - populate dropdown
+        if (data.action === 'list_tabs' && data.tabs) {
+          const select = document.getElementById('tabSelect');
+          const currentValue = select.value;
+          select.innerHTML = '<option value="">Auto (most recent)</option>';
+          data.tabs.forEach(tab => {
+            const opt = document.createElement('option');
+            opt.value = tab.id;
+            opt.textContent = `${tab.id} - ${tab.title || 'Gemini'}${tab.active ? ' ⭐' : ''}`;
+            select.appendChild(opt);
+          });
+          // Restore selection if still valid
+          if (currentValue) select.value = currentValue;
+        }
+
+        responseCount++;
+        document.getElementById('responses').textContent = responseCount;
+        addLog('resLog', 'res', topic, data);
+      } else if (topic === TOPICS.state) {
+        // State updates
+        if (data.loading !== undefined) {
+          addLog('resLog', 'state', topic, data);
+        }
+      }
+    }
+
+    function addLog(logId, type, topic, data) {
+      const log = document.getElementById(logId);
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + type;
+
+      const time = new Date().toLocaleTimeString();
+      const shortTopic = topic.split('/').pop();
+
+      entry.innerHTML = `
+        <span class="time">${time}</span>
+        <span class="topic">[${shortTopic}]</span>
+        <pre>${JSON.stringify(data, null, 2)}</pre>
+      `;
+
+      log.insertBefore(entry, log.firstChild);
+
+      // Keep only last 50 entries
+      while (log.children.length > 50) {
+        log.removeChild(log.lastChild);
+      }
+    }
+
+    function send(cmd) {
+      cmd.id = cmd.id || 'debug_' + (++cmdId);
+
+      // Add selected tabId if one is chosen
+      const selectedTab = document.getElementById('tabSelect').value;
+      if (selectedTab && !cmd.tabId) {
+        cmd.tabId = parseInt(selectedTab);
+      }
+
+      addLog('cmdLog', 'cmd', TOPICS.command, cmd);
+      client.publish(TOPICS.command, JSON.stringify(cmd));
+    }
+
+    function refreshTabs() {
+      send({ action: 'list_tabs', id: 'list_tabs_' + Date.now() });
+    }
+
+    function clickText(text) {
+      send({ action: 'clickText', text: text });
+    }
+
+    function selectModel(model) {
+      send({ action: 'select_model', model: model });
+    }
+
+    function sendChat() {
+      const text = document.getElementById('chatInput').value;
+      if (text) {
+        send({ action: 'chat', text: text });
+        document.getElementById('chatInput').value = '';
+      }
+    }
+
+    function clickSelector() {
+      const selector = document.getElementById('clickSelector').value;
+      if (selector) {
+        send({ action: 'click', selector: selector });
+      }
+    }
+
+    function clickTextInput() {
+      const text = document.getElementById('clickTextInput').value;
+      if (text) {
+        send({ action: 'clickText', text: text });
+      }
+    }
+
+    function sendCustom() {
+      try {
+        const cmd = JSON.parse(document.getElementById('customCmd').value);
+        send(cmd);
+      } catch (e) {
+        alert('Invalid JSON: ' + e.message);
+      }
+    }
+
+    function clearLogs() {
+      document.getElementById('cmdLog').innerHTML = '';
+      document.getElementById('resLog').innerHTML = '';
+      responseCount = 0;
+      document.getElementById('responses').textContent = '0';
+    }
+
+    // Show connection info from variables
+    document.getElementById('mqttUrl').textContent = 'MQTT: ' + MQTT_URL;
+    document.getElementById('mqttTopics').textContent = 'Topics: ' + Object.values(TOPICS).join(', ');
+
+    // Connect on load
+    connect();
+  </script>
+</body>
+</html>
