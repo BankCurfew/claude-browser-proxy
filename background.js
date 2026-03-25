@@ -1099,32 +1099,39 @@ Use double newlines between timestamps!`;
                 return { error: 'Input not found', selectors: selectors.length };
               }
 
-              // Focus and clear
+              // Focus the editor
               input.focus();
 
-              // Set text directly (works better than execCommand)
-              if (input.innerHTML !== undefined) {
-                input.innerHTML = '<p>' + text + '</p>';
-              } else {
-                input.textContent = text;
-              }
+              // Clear existing content first
+              input.innerHTML = '';
+              input.dispatchEvent(new InputEvent('input', { bubbles: true }));
 
-              // Dispatch input event to trigger Gemini's handlers
-              input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+              // Use execCommand insertText — this triggers Quill's native handlers
+              // Unlike innerHTML, this updates Quill's internal model properly
+              document.execCommand('insertText', false, text);
 
-              // Small delay then press Enter
-              setTimeout(() => {
-                // Find and click send button as backup
-                const sendBtn = document.querySelector('button[aria-label*="Send"], button[data-test-id="send-button"], .send-button');
-                if (sendBtn) {
-                  sendBtn.click();
-                } else {
-                  // Try Enter key
-                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-                }
-              }, 100);
+              // Verify Quill registered the text (ql-blank should be removed)
+              const hasText = !input.classList.contains('ql-blank');
 
-              return { success: true, sent: text.substring(0, 50) };
+              // Wait then click send button
+              return new Promise(resolve => {
+                setTimeout(() => {
+                  const sendBtn = document.querySelector(
+                    'button.send-button, button[aria-label*="Send message"], button.submit'
+                  );
+                  if (sendBtn && !sendBtn.disabled) {
+                    sendBtn.click();
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady: hasText, method: 'button' });
+                  } else {
+                    // Fallback: Enter key on the editor
+                    input.dispatchEvent(new KeyboardEvent('keydown', {
+                      key: 'Enter', code: 'Enter', keyCode: 13,
+                      bubbles: true, cancelable: true
+                    }));
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady: hasText, method: 'enter' });
+                  }
+                }, 200);
+              });
             } catch (e) {
               return { error: e.message };
             }
