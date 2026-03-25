@@ -625,11 +625,46 @@ Use double newlines between timestamps!`;
       case 'find':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (sel) => {
+          func: (sel, attrs) => {
             const els = document.querySelectorAll(sel);
-            return { count: els.length, found: els.length > 0 };
+            if (!attrs) return { count: els.length, found: els.length > 0 };
+            const elements = Array.from(els).map((el, i) => {
+              const info = { index: i, tag: el.tagName };
+              for (const attr of attrs) {
+                if (attr === 'text') info.text = (el.innerText || '').substring(0, 200);
+                else info[attr] = el.getAttribute(attr) || el[attr] || null;
+              }
+              return info;
+            });
+            return { count: els.length, found: els.length > 0, elements };
           },
-          args: [command.selector]
+          args: [command.selector, command.attrs || null]
+        });
+        result = result[0]?.result;
+        break;
+
+      case 'get_images':
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (onlyResponses) => {
+            const container = onlyResponses
+              ? 'model-response img, message-content img, MESSAGE-CONTENT img'
+              : 'img';
+            const imgs = document.querySelectorAll(container);
+            const images = Array.from(imgs)
+              .filter(img => img.src && img.naturalWidth > 100)
+              .map((img, i) => ({
+                index: i,
+                src: img.src,
+                alt: img.alt || '',
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                isBlob: img.src.startsWith('blob:'),
+                isData: img.src.startsWith('data:'),
+              }));
+            return { images, count: images.length };
+          },
+          args: [command.onlyResponses !== false]
         });
         result = result[0]?.result;
         break;
@@ -760,6 +795,111 @@ Use double newlines between timestamps!`;
         });
         result = { downloadId: dlId };
         break;
+
+      case 'download_images': {
+        // Extract generated images from Gemini response and download them
+        const imgResults = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (responseIndex) => {
+            // Find images in Gemini responses
+            const containers = document.querySelectorAll('model-response, message-content, MESSAGE-CONTENT');
+            const targetContainers = responseIndex >= 0
+              ? [containers[responseIndex]].filter(Boolean)
+              : Array.from(containers);
+
+            const images = [];
+            for (const container of targetContainers) {
+              if (!container) continue;
+              const imgs = container.querySelectorAll('img');
+              for (const img of imgs) {
+                if (!img.src || img.naturalWidth < 100) continue;
+                // Convert to data URL via canvas
+                try {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = img.naturalWidth;
+                  canvas.height = img.naturalHeight;
+                  const ctx = canvas.getContext('2d');
+                  ctx.drawImage(img, 0, 0);
+                  const dataUrl = canvas.toDataURL('image/png');
+                  images.push({
+                    dataUrl,
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    alt: img.alt || '',
+                    src: img.src.substring(0, 200),
+                  });
+                } catch (e) {
+                  // CORS might block canvas — return src URL instead
+                  images.push({
+                    src: img.src,
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    alt: img.alt || '',
+                    corsBlocked: true,
+                    error: e.message,
+                  });
+                }
+              }
+            }
+            return { images, count: images.length };
+          },
+          args: [command.responseIndex ?? -1]
+        });
+
+        const imgData = imgResults[0]?.result;
+        if (!imgData || imgData.count === 0) {
+          result = { error: 'No images found in responses' };
+          break;
+        }
+
+        // Download each image
+        const downloads = [];
+        const timestamp = Date.now();
+        for (let i = 0; i < imgData.images.length; i++) {
+          const img = imgData.images[i];
+          const filename = command.prefix
+            ? `${command.prefix}_${i + 1}.png`
+            : `gemini_${timestamp}_${i + 1}.png`;
+
+          if (img.dataUrl) {
+            try {
+              const did = await chrome.downloads.download({
+                url: img.dataUrl,
+                filename: filename,
+              });
+              downloads.push({ downloadId: did, filename, width: img.width, height: img.height });
+            } catch (e) {
+              downloads.push({ error: e.message, filename });
+            }
+          } else if (img.src && !img.corsBlocked) {
+            try {
+              const did = await chrome.downloads.download({
+                url: img.src,
+                filename: filename,
+              });
+              downloads.push({ downloadId: did, filename, width: img.width, height: img.height });
+            } catch (e) {
+              downloads.push({ error: e.message, src: img.src });
+            }
+          } else if (img.src && img.src.startsWith('http')) {
+            // CORS blocked canvas but URL is downloadable directly
+            try {
+              const did = await chrome.downloads.download({
+                url: img.src,
+                filename: filename,
+              });
+              downloads.push({ downloadId: did, filename, width: img.width, height: img.height, method: 'direct_url' });
+            } catch (e) {
+              downloads.push({ skipped: true, src: img.src, reason: e.message });
+            }
+          } else {
+            downloads.push({ skipped: true, src: img.src, reason: img.error || 'No downloadable URL' });
+          }
+        }
+
+        result = { downloads, totalImages: imgData.count, downloaded: downloads.filter(d => d.downloadId).length };
+        break;
+      }
 
       case 'execute':
         result = await chrome.scripting.executeScript({
