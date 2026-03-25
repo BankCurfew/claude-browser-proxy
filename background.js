@@ -880,9 +880,10 @@ Use double newlines between timestamps!`;
               downloads.push({ error: e.message, filename });
             }
           } else if (img.src) {
-            // Fallback: direct URL download
+            // Fallback: direct URL download with cache-bust
             try {
-              const did = await chrome.downloads.download({ url: img.src, filename });
+              const bustUrl = img.src + (img.src.includes('?') ? '&' : '?') + '_t=' + Date.now();
+              const did = await chrome.downloads.download({ url: bustUrl, filename });
               downloads.push({ downloadId: did, filename, width: img.width, height: img.height, method: 'direct_url' });
             } catch (e) {
               downloads.push({ skipped: true, src: img.src, reason: e.message });
