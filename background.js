@@ -4,7 +4,7 @@
 importScripts('mqtt.min.js');
 
 const VERSION = '2.9.39'; // Short version for badge display
-const MQTT_URL = 'ws://localhost:9001';
+const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
   response: 'claude/browser/response',
@@ -128,6 +128,7 @@ async function handleCommand(topic, command) {
   await broadcastLog('cmd', command);
 
   let result;
+  let tab;
 
   try {
     // === TAB MANAGEMENT ACTIONS (don't require existing Gemini tab) ===
@@ -438,7 +439,6 @@ Use double newlines between timestamps!`;
     }
 
     // === RESOLVE TARGET TAB ===
-    let tab;
     if (command.tabId) {
       // Use specific tab if provided - simple and direct
       tab = await chrome.tabs.get(command.tabId);
@@ -995,8 +995,8 @@ Use double newlines between timestamps!`;
   const response = {
     id: command.id,
     action: command.action,
-    ...result,  // Flatten result into response
-    tabId: tab?.id,  // Include which tab was used
+    ...(result && typeof result === 'object' ? result : { result }),
+    tabId: tab?.id,
     timestamp: Date.now()
   };
   publish(TOPICS.response, response, true);
