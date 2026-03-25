@@ -1102,35 +1102,55 @@ Use double newlines between timestamps!`;
               // Focus the editor
               input.focus();
 
-              // Clear existing content first
-              input.innerHTML = '';
-              input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+              // Select all existing content and delete it
+              const selection = window.getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(input);
+              selection.removeAllRanges();
+              selection.addRange(range);
 
-              // Use execCommand insertText — this triggers Quill's native handlers
-              // Unlike innerHTML, this updates Quill's internal model properly
-              document.execCommand('insertText', false, text);
+              // Simulate clipboard paste — Quill handles paste events natively
+              // This properly updates Quill's internal Delta model
+              const dt = new DataTransfer();
+              dt.setData('text/plain', text);
+              input.dispatchEvent(new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true
+              }));
 
-              // Verify Quill registered the text (ql-blank should be removed)
-              const hasText = !input.classList.contains('ql-blank');
-
-              // Wait then click send button
+              // Wait for Quill to process the paste
               return new Promise(resolve => {
                 setTimeout(() => {
-                  const sendBtn = document.querySelector(
-                    'button.send-button, button[aria-label*="Send message"], button.submit'
-                  );
-                  if (sendBtn && !sendBtn.disabled) {
-                    sendBtn.click();
-                    resolve({ success: true, sent: text.substring(0, 50), quillReady: hasText, method: 'button' });
-                  } else {
-                    // Fallback: Enter key on the editor
-                    input.dispatchEvent(new KeyboardEvent('keydown', {
-                      key: 'Enter', code: 'Enter', keyCode: 13,
-                      bubbles: true, cancelable: true
-                    }));
-                    resolve({ success: true, sent: text.substring(0, 50), quillReady: hasText, method: 'enter' });
+                  const hasText = !input.classList.contains('ql-blank');
+
+                  // If paste didn't work, try execCommand as fallback
+                  if (!hasText) {
+                    input.focus();
+                    input.innerHTML = '';
+                    document.execCommand('insertText', false, text);
                   }
-                }, 200);
+
+                  const quillReady = !input.classList.contains('ql-blank');
+
+                  // Another wait then click send
+                  setTimeout(() => {
+                    const sendBtn = document.querySelector(
+                      'button.send-button, button[aria-label*="Send message"], button.submit'
+                    );
+                    if (sendBtn && !sendBtn.disabled) {
+                      sendBtn.click();
+                      resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'button' });
+                    } else {
+                      // Fallback: Enter key
+                      input.dispatchEvent(new KeyboardEvent('keydown', {
+                        key: 'Enter', code: 'Enter', keyCode: 13,
+                        bubbles: true, cancelable: true
+                      }));
+                      resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'enter' });
+                    }
+                  }, 200);
+                }, 150);
               });
             } catch (e) {
               return { error: e.message };
