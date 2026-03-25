@@ -817,16 +817,23 @@ Use double newlines between timestamps!`;
               return true;
             });
 
-            // Filter by responseIndex (count model-response containers)
+            // Filter by responseIndex
+            // -1 (default) = LAST response only (most common use case)
+            // -2 = ALL responses (no filter)
+            // >= 0 = specific response by index
             let imgs = unique;
-            if (responseIndex >= 0) {
-              const responses = document.querySelectorAll('model-response');
-              if (responses[responseIndex]) {
-                const responseImgs = new Set();
-                responses[responseIndex].querySelectorAll('img').forEach(i => responseImgs.add(i.src));
-                imgs = unique.filter(img => responseImgs.has(img.src));
-              }
+            const responses = document.querySelectorAll('model-response');
+            let targetIdx = responseIndex;
+            if (targetIdx === -1) {
+              // Default: last response only
+              targetIdx = responses.length - 1;
             }
+            if (targetIdx >= 0 && targetIdx < responses.length) {
+              const responseImgs = new Set();
+              responses[targetIdx].querySelectorAll('img').forEach(i => responseImgs.add(i.src));
+              imgs = unique.filter(img => responseImgs.has(img.src));
+            }
+            // targetIdx === -2 means all responses, no filtering
 
             // Fetch each image as blob → data URL (bypasses cache + CORS)
             const results = [];
