@@ -807,11 +807,13 @@ Use double newlines between timestamps!`;
             const filtered = Array.from(allImgs)
               .filter(img => img.src && img.naturalWidth > 100);
 
-            // Deduplicate by src URL
+            // Deduplicate by URL path (strip query params + hash for Google CDN variants)
             const seen = new Set();
             const unique = filtered.filter(img => {
-              if (seen.has(img.src)) return false;
-              seen.add(img.src);
+              // Normalize: strip query params, hash, and trailing size params (=s1024-rj etc)
+              const key = img.src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
+              if (seen.has(key)) return false;
+              seen.add(key);
               return true;
             });
 
