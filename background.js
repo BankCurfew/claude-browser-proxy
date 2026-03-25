@@ -1064,6 +1064,22 @@ Use double newlines between timestamps!`;
           result = { error: 'Not on Gemini page' };
           break;
         }
+        // newChat: navigate to /app in same tab (no new tab)
+        if (command.newChat) {
+          await chrome.tabs.update(tab.id, { url: 'https://gemini.google.com/app' });
+          // Wait for page to load
+          await new Promise(resolve => {
+            const listener = (tabId, info) => {
+              if (tabId === tab.id && info.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 5000);
+          });
+          await new Promise(r => setTimeout(r, 1500)); // Extra wait for Gemini JS to init
+        }
         const chatText = command.text || '';
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
