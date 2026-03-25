@@ -797,51 +797,62 @@ Use double newlines between timestamps!`;
         break;
 
       case 'download_images': {
-        // Extract generated images from Gemini response and download them
+        // Extract images via fetch() in page context (avoids CORS + caching issues)
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (responseIndex) => {
-            // Find images in Gemini responses
-            const containers = document.querySelectorAll('model-response, message-content, MESSAGE-CONTENT');
-            const targetContainers = responseIndex >= 0
-              ? [containers[responseIndex]].filter(Boolean)
-              : Array.from(containers);
+          func: async (responseIndex) => {
+            // Use same selectors as get_images for consistency
+            const selector = 'model-response img, message-content img, MESSAGE-CONTENT img';
+            const allImgs = document.querySelectorAll(selector);
+            const filtered = Array.from(allImgs)
+              .filter(img => img.src && img.naturalWidth > 100);
 
-            const images = [];
-            for (const container of targetContainers) {
-              if (!container) continue;
-              const imgs = container.querySelectorAll('img');
-              for (const img of imgs) {
-                if (!img.src || img.naturalWidth < 100) continue;
-                // Convert to data URL via canvas
-                try {
-                  const canvas = document.createElement('canvas');
-                  canvas.width = img.naturalWidth;
-                  canvas.height = img.naturalHeight;
-                  const ctx = canvas.getContext('2d');
-                  ctx.drawImage(img, 0, 0);
-                  const dataUrl = canvas.toDataURL('image/png');
-                  images.push({
-                    dataUrl,
-                    width: img.naturalWidth,
-                    height: img.naturalHeight,
-                    alt: img.alt || '',
-                    src: img.src.substring(0, 200),
-                  });
-                } catch (e) {
-                  // CORS might block canvas — return src URL instead
-                  images.push({
-                    src: img.src,
-                    width: img.naturalWidth,
-                    height: img.naturalHeight,
-                    alt: img.alt || '',
-                    corsBlocked: true,
-                    error: e.message,
-                  });
-                }
+            // Deduplicate by src URL
+            const seen = new Set();
+            const unique = filtered.filter(img => {
+              if (seen.has(img.src)) return false;
+              seen.add(img.src);
+              return true;
+            });
+
+            // Filter by responseIndex (count model-response containers)
+            let imgs = unique;
+            if (responseIndex >= 0) {
+              const responses = document.querySelectorAll('model-response');
+              if (responses[responseIndex]) {
+                const responseImgs = new Set();
+                responses[responseIndex].querySelectorAll('img').forEach(i => responseImgs.add(i.src));
+                imgs = unique.filter(img => responseImgs.has(img.src));
               }
             }
-            return { images, count: images.length };
+
+            // Fetch each image as blob → data URL (bypasses cache + CORS)
+            const results = [];
+            for (const img of imgs) {
+              try {
+                const resp = await fetch(img.src, { cache: 'no-cache' });
+                const blob = await resp.blob();
+                const dataUrl = await new Promise(resolve => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => resolve(reader.result);
+                  reader.readAsDataURL(blob);
+                });
+                results.push({
+                  dataUrl,
+                  width: img.naturalWidth,
+                  height: img.naturalHeight,
+                  src: img.src.substring(0, 100),
+                });
+              } catch (e) {
+                results.push({
+                  src: img.src,
+                  width: img.naturalWidth,
+                  height: img.naturalHeight,
+                  error: e.message,
+                });
+              }
+            }
+            return { images: results, count: results.length };
           },
           args: [command.responseIndex ?? -1]
         });
@@ -852,7 +863,7 @@ Use double newlines between timestamps!`;
           break;
         }
 
-        // Download each image
+        // Download each image from data URL
         const downloads = [];
         const timestamp = Date.now();
         for (let i = 0; i < imgData.images.length; i++) {
@@ -863,37 +874,19 @@ Use double newlines between timestamps!`;
 
           if (img.dataUrl) {
             try {
-              const did = await chrome.downloads.download({
-                url: img.dataUrl,
-                filename: filename,
-              });
+              const did = await chrome.downloads.download({ url: img.dataUrl, filename });
               downloads.push({ downloadId: did, filename, width: img.width, height: img.height });
             } catch (e) {
               downloads.push({ error: e.message, filename });
             }
-          } else if (img.src && !img.corsBlocked) {
+          } else if (img.src) {
+            // Fallback: direct URL download
             try {
-              const did = await chrome.downloads.download({
-                url: img.src,
-                filename: filename,
-              });
-              downloads.push({ downloadId: did, filename, width: img.width, height: img.height });
-            } catch (e) {
-              downloads.push({ error: e.message, src: img.src });
-            }
-          } else if (img.src && img.src.startsWith('http')) {
-            // CORS blocked canvas but URL is downloadable directly
-            try {
-              const did = await chrome.downloads.download({
-                url: img.src,
-                filename: filename,
-              });
+              const did = await chrome.downloads.download({ url: img.src, filename });
               downloads.push({ downloadId: did, filename, width: img.width, height: img.height, method: 'direct_url' });
             } catch (e) {
               downloads.push({ skipped: true, src: img.src, reason: e.message });
             }
-          } else {
-            downloads.push({ skipped: true, src: img.src, reason: img.error || 'No downloadable URL' });
           }
         }
 
