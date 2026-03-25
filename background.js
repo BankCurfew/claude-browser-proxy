@@ -1077,7 +1077,7 @@ Use double newlines between timestamps!`;
         const chatText = command.text || '';
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (text) => {
+          func: async (text) => {
             try {
               // Try multiple selectors for Gemini input
               const selectors = [
@@ -1102,55 +1102,78 @@ Use double newlines between timestamps!`;
               // Focus the editor
               input.focus();
 
-              // Select all existing content and delete it
-              const selection = window.getSelection();
-              const range = document.createRange();
-              range.selectNodeContents(input);
-              selection.removeAllRanges();
-              selection.addRange(range);
+              // Strategy: write to real clipboard, then execCommand paste
+              // This triggers Quill's clipboard module which properly updates Delta model
+              let method = 'none';
+              let quillReady = false;
 
-              // Simulate clipboard paste — Quill handles paste events natively
-              // This properly updates Quill's internal Delta model
-              const dt = new DataTransfer();
-              dt.setData('text/plain', text);
-              input.dispatchEvent(new ClipboardEvent('paste', {
-                clipboardData: dt,
-                bubbles: true,
-                cancelable: true
-              }));
+              // Method 1: Real clipboard write + paste
+              try {
+                await navigator.clipboard.writeText(text);
+                document.execCommand('selectAll');
+                document.execCommand('paste');
+                await new Promise(r => setTimeout(r, 100));
+                quillReady = !input.classList.contains('ql-blank');
+                if (quillReady) method = 'clipboard_paste';
+              } catch (e) {
+                // clipboard API might be blocked
+              }
 
-              // Wait for Quill to process the paste
+              // Method 2: Quill API via DOM — find Quill instance
+              if (!quillReady) {
+                try {
+                  const container = input.closest('.ql-container');
+                  const quill = container?.__quill;
+                  if (quill) {
+                    quill.setText(text);
+                    quillReady = !input.classList.contains('ql-blank');
+                    if (quillReady) method = 'quill_api';
+                  }
+                } catch (e) {}
+              }
+
+              // Method 3: InputEvent beforeinput (modern browsers)
+              if (!quillReady) {
+                input.focus();
+                input.innerHTML = '';
+                input.dispatchEvent(new InputEvent('beforeinput', {
+                  inputType: 'insertText',
+                  data: text,
+                  bubbles: true,
+                  cancelable: true,
+                  composed: true
+                }));
+                await new Promise(r => setTimeout(r, 100));
+                quillReady = !input.classList.contains('ql-blank');
+                if (quillReady) method = 'beforeinput';
+              }
+
+              // Method 4: Direct innerHTML + force remove ql-blank
+              if (!quillReady) {
+                input.innerHTML = '<p>' + text + '</p>';
+                input.classList.remove('ql-blank');
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                method = 'innerHTML_force';
+                quillReady = true; // forced
+              }
+
+              // Click send button
               return new Promise(resolve => {
                 setTimeout(() => {
-                  const hasText = !input.classList.contains('ql-blank');
-
-                  // If paste didn't work, try execCommand as fallback
-                  if (!hasText) {
-                    input.focus();
-                    input.innerHTML = '';
-                    document.execCommand('insertText', false, text);
+                  const sendBtn = document.querySelector(
+                    'button.send-button, button[aria-label*="Send message"], button.submit'
+                  );
+                  if (sendBtn && !sendBtn.disabled) {
+                    sendBtn.click();
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'button+' + method });
+                  } else {
+                    input.dispatchEvent(new KeyboardEvent('keydown', {
+                      key: 'Enter', code: 'Enter', keyCode: 13,
+                      bubbles: true, cancelable: true
+                    }));
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'enter+' + method });
                   }
-
-                  const quillReady = !input.classList.contains('ql-blank');
-
-                  // Another wait then click send
-                  setTimeout(() => {
-                    const sendBtn = document.querySelector(
-                      'button.send-button, button[aria-label*="Send message"], button.submit'
-                    );
-                    if (sendBtn && !sendBtn.disabled) {
-                      sendBtn.click();
-                      resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'button' });
-                    } else {
-                      // Fallback: Enter key
-                      input.dispatchEvent(new KeyboardEvent('keydown', {
-                        key: 'Enter', code: 'Enter', keyCode: 13,
-                        bubbles: true, cancelable: true
-                      }));
-                      resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'enter' });
-                    }
-                  }, 200);
-                }, 150);
+                }, 300);
               });
             } catch (e) {
               return { error: e.message };
