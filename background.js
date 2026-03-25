@@ -1099,63 +1099,31 @@ Use double newlines between timestamps!`;
                 return { error: 'Input not found', selectors: selectors.length };
               }
 
-              // Focus the editor
+              // Focus the editor and select all to clear
               input.focus();
+              document.execCommand('selectAll');
+              document.execCommand('delete');
 
-              // Strategy: write to real clipboard, then execCommand paste
-              // This triggers Quill's clipboard module which properly updates Delta model
-              let method = 'none';
-              let quillReady = false;
-
-              // Method 1: Real clipboard write + paste
-              try {
-                await navigator.clipboard.writeText(text);
-                document.execCommand('selectAll');
-                document.execCommand('paste');
-                await new Promise(r => setTimeout(r, 100));
-                quillReady = !input.classList.contains('ql-blank');
-                if (quillReady) method = 'clipboard_paste';
-              } catch (e) {
-                // clipboard API might be blocked
-              }
-
-              // Method 2: Quill API via DOM — find Quill instance
-              if (!quillReady) {
-                try {
-                  const container = input.closest('.ql-container');
-                  const quill = container?.__quill;
-                  if (quill) {
-                    quill.setText(text);
-                    quillReady = !input.classList.contains('ql-blank');
-                    if (quillReady) method = 'quill_api';
-                  }
-                } catch (e) {}
-              }
-
-              // Method 3: InputEvent beforeinput (modern browsers)
-              if (!quillReady) {
-                input.focus();
-                input.innerHTML = '';
+              // Type text character by character using InputEvent
+              // This is the ONLY way to properly trigger Quill's input handler
+              // Quill listens to DOM mutations caused by browser's native input handling
+              for (const char of text) {
+                // beforeinput tells the editor what's coming
                 input.dispatchEvent(new InputEvent('beforeinput', {
                   inputType: 'insertText',
-                  data: text,
+                  data: char,
                   bubbles: true,
                   cancelable: true,
                   composed: true
                 }));
-                await new Promise(r => setTimeout(r, 100));
-                quillReady = !input.classList.contains('ql-blank');
-                if (quillReady) method = 'beforeinput';
+                // Actually insert the character via execCommand (native browser)
+                document.execCommand('insertText', false, char);
               }
 
-              // Method 4: Direct innerHTML + force remove ql-blank
-              if (!quillReady) {
-                input.innerHTML = '<p>' + text + '</p>';
-                input.classList.remove('ql-blank');
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                method = 'innerHTML_force';
-                quillReady = true; // forced
-              }
+              // Wait for Quill to process all mutations
+              await new Promise(r => setTimeout(r, 200));
+              const quillReady = !input.classList.contains('ql-blank');
+              const editorText = input.innerText.trim();
 
               // Click send button
               return new Promise(resolve => {
@@ -1165,13 +1133,13 @@ Use double newlines between timestamps!`;
                   );
                   if (sendBtn && !sendBtn.disabled) {
                     sendBtn.click();
-                    resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'button+' + method });
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady, editorText: editorText.substring(0, 50), method: 'type_button' });
                   } else {
                     input.dispatchEvent(new KeyboardEvent('keydown', {
                       key: 'Enter', code: 'Enter', keyCode: 13,
                       bubbles: true, cancelable: true
                     }));
-                    resolve({ success: true, sent: text.substring(0, 50), quillReady, method: 'enter+' + method });
+                    resolve({ success: true, sent: text.substring(0, 50), quillReady, editorText: editorText.substring(0, 50), method: 'type_enter' });
                   }
                 }, 300);
               });
