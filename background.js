@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.3'; // Short version for badge display
+const VERSION = '2.10.4'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -880,80 +880,57 @@ Use double newlines between timestamps!`;
               if (s.srcset) addSrc(s.srcset.split(',')[0].trim().split(' ')[0], 0, 0);
             });
 
-            // Convert each image to data URL via canvas draw or fetch+blob
-            const results = [];
-            for (const item of sources) {
-              try {
-                if (item.src.startsWith('data:')) {
-                  results.push({ dataUrl: item.src, width: item.width, height: item.height, src: 'canvas' });
-                  continue;
+            // Fetch images via injected page-context script (has cookies)
+            // Content script injects <script> into page, which fetches with cookies
+            // and posts dataURLs back via window.postMessage
+            const nonce = Math.random().toString(36).slice(2);
+            const results = await new Promise((resolve) => {
+              const handler = (event) => {
+                if (event.data && event.data._imgNonce === nonce) {
+                  window.removeEventListener('message', handler);
+                  resolve(event.data.results);
                 }
+              };
+              window.addEventListener('message', handler);
+              // Timeout after 15s
+              setTimeout(() => {
+                window.removeEventListener('message', handler);
+                resolve(sources.map(s => ({ src: s.src.substring(0, 100), width: s.width, height: s.height, error: 'timeout' })));
+              }, 15000);
 
-                // Method 1: Draw existing DOM img to canvas (works for already-loaded images)
-                let dataUrl = null;
-                const domImgs = deepQueryAll(document, 'img');
-                for (const img of domImgs) {
-                  if (img.src === item.src && img.naturalWidth > 0) {
-                    try {
-                      const c = document.createElement('canvas');
-                      c.width = img.naturalWidth;
-                      c.height = img.naturalHeight;
-                      const ctx = c.getContext('2d');
-                      ctx.drawImage(img, 0, 0);
-                      dataUrl = c.toDataURL('image/png');
-                      break;
-                    } catch (e) { /* tainted canvas, try next method */ }
-                  }
-                }
-
-                // Method 2: Re-fetch with crossorigin img element
-                if (!dataUrl) {
+              const script = document.createElement('script');
+              script.textContent = `(async () => {
+                const sources = ${JSON.stringify(sources)};
+                const nonce = ${JSON.stringify(nonce)};
+                const results = [];
+                for (const item of sources) {
                   try {
-                    dataUrl = await new Promise((resolve, reject) => {
-                      const img = new Image();
-                      img.crossOrigin = 'anonymous';
-                      img.onload = () => {
-                        try {
-                          const c = document.createElement('canvas');
-                          c.width = img.naturalWidth;
-                          c.height = img.naturalHeight;
-                          const ctx = c.getContext('2d');
-                          ctx.drawImage(img, 0, 0);
-                          resolve(c.toDataURL('image/png'));
-                        } catch (e) { reject(e); }
-                      };
-                      img.onerror = reject;
-                      setTimeout(() => reject(new Error('timeout')), 10000);
-                      img.src = item.src;
+                    if (item.src.startsWith('data:')) {
+                      results.push({ dataUrl: item.src, width: item.width, height: item.height, src: 'canvas' });
+                      continue;
+                    }
+                    const resp = await fetch(item.src, { credentials: 'include' });
+                    const ct = resp.headers.get('content-type') || '';
+                    if (!ct.startsWith('image/')) {
+                      results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: 'not image: ' + ct });
+                      continue;
+                    }
+                    const blob = await resp.blob();
+                    const dataUrl = await new Promise(r => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => r(reader.result);
+                      reader.readAsDataURL(blob);
                     });
-                  } catch (e) { /* crossorigin blocked, try fetch */ }
-                }
-
-                // Method 3: Fetch as blob (MAIN world has page cookies)
-                if (!dataUrl) {
-                  const resp = await fetch(item.src, { credentials: 'include', cache: 'no-cache' });
-                  const ct = resp.headers.get('content-type') || '';
-                  if (!ct.startsWith('image/')) {
-                    results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: `not image: ${ct}` });
-                    continue;
+                    results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
+                  } catch (e) {
+                    results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: e.message });
                   }
-                  const blob = await resp.blob();
-                  dataUrl = await new Promise(resolve => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.readAsDataURL(blob);
-                  });
                 }
-
-                if (dataUrl) {
-                  results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
-                } else {
-                  results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: 'all methods failed' });
-                }
-              } catch (e) {
-                results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: e.message });
-              }
-            }
+                window.postMessage({ _imgNonce: nonce, results }, '*');
+              })();`;
+              document.documentElement.appendChild(script);
+              script.remove();
+            });
             return { images: results, count: results.length };
           },
           args: [command.responseIndex ?? -1]
