@@ -647,78 +647,63 @@ Use double newlines between timestamps!`;
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (onlyResponses) => {
-            // 1. Standard <img> tags (original approach)
-            const container = onlyResponses
-              ? 'model-response img, message-content img, MESSAGE-CONTENT img, [data-message-id] img'
-              : 'img';
-            const imgs = document.querySelectorAll(container);
-            const images = Array.from(imgs)
-              .filter(img => img.src && img.naturalWidth > 100)
-              .map((img, i) => ({
-                index: i,
-                src: img.src,
-                alt: img.alt || '',
-                width: img.naturalWidth,
-                height: img.naturalHeight,
-                isBlob: img.src.startsWith('blob:'),
-                isData: img.src.startsWith('data:'),
-              }));
+            // Helper: recursively walk shadow DOMs to find all elements matching tag
+            function deepQueryAll(root, selector) {
+              const results = Array.from(root.querySelectorAll(selector));
+              // Walk shadow roots
+              const allEls = root.querySelectorAll('*');
+              for (const el of allEls) {
+                if (el.shadowRoot) {
+                  results.push(...deepQueryAll(el.shadowRoot, selector));
+                }
+              }
+              return results;
+            }
 
-            // 2. Canvas elements (Gemini may render generated images on canvas)
-            const canvases = document.querySelectorAll('model-response canvas, message-content canvas, [data-message-id] canvas, canvas');
-            Array.from(canvases)
-              .filter(c => c.width > 100 && c.height > 100)
-              .forEach((c, i) => {
-                try {
-                  images.push({
-                    index: images.length,
-                    src: c.toDataURL('image/png'),
-                    alt: 'canvas-image',
-                    width: c.width,
-                    height: c.height,
-                    isBlob: false,
-                    isData: true,
-                  });
-                } catch(e) { /* tainted canvas */ }
+            const images = [];
+            const seen = new Set();
+            function addImg(src, alt, width, height) {
+              const key = src.substring(0, 200);
+              if (seen.has(key)) return;
+              // Skip extension icons and tiny profile pics
+              if (src.includes('chrome-extension://')) return;
+              if (src.includes('googleusercontent.com/a/')) return;
+              if (src.includes('lh3.google.com/a/')) return;
+              seen.add(key);
+              images.push({
+                index: images.length, src, alt: alt || '',
+                width, height,
+                isBlob: src.startsWith('blob:'),
+                isData: src.startsWith('data:'),
               });
+            }
 
-            // 3. Background images on divs (Gemini sometimes uses inline styles)
-            const bgDivs = document.querySelectorAll('model-response [style*="background-image"], message-content [style*="background-image"], [data-message-id] [style*="background-image"]');
-            Array.from(bgDivs).forEach(el => {
-              const bg = el.style.backgroundImage;
-              const match = bg.match(/url\(["']?(.+?)["']?\)/);
+            // 1. Standard + shadow DOM <img> tags
+            const allImgs = deepQueryAll(document, 'img');
+            allImgs.filter(img => img.src && (img.naturalWidth > 100 || img.width > 100))
+              .forEach(img => addImg(img.src, img.alt, img.naturalWidth || img.width, img.naturalHeight || img.height));
+
+            // 2. Canvas elements (deep)
+            const allCanvas = deepQueryAll(document, 'canvas');
+            allCanvas.filter(c => c.width > 100 && c.height > 100).forEach(c => {
+              try { addImg(c.toDataURL('image/png'), 'canvas-image', c.width, c.height); }
+              catch(e) { /* tainted */ }
+            });
+
+            // 3. Background images (deep)
+            const allBg = deepQueryAll(document, '[style*="background-image"]');
+            allBg.forEach(el => {
+              const match = el.style.backgroundImage.match(/url\(["']?(.+?)["']?\)/);
               if (match && match[1] && el.offsetWidth > 100) {
-                images.push({
-                  index: images.length,
-                  src: match[1],
-                  alt: 'bg-image',
-                  width: el.offsetWidth,
-                  height: el.offsetHeight,
-                  isBlob: match[1].startsWith('blob:'),
-                  isData: match[1].startsWith('data:'),
-                });
+                addImg(match[1], 'bg-image', el.offsetWidth, el.offsetHeight);
               }
             });
 
-            // 4. All large <img> anywhere as fallback (if response selectors found nothing)
-            if (images.length === 0) {
-              const allImgs = document.querySelectorAll('img');
-              Array.from(allImgs)
-                .filter(img => img.src && img.naturalWidth > 200 && img.naturalHeight > 200
-                  && !img.src.includes('googleusercontent.com/a/') // skip profile pics
-                  && !img.src.includes('lh3.google.com/a/'))
-                .forEach((img, i) => {
-                  images.push({
-                    index: i,
-                    src: img.src,
-                    alt: img.alt || '',
-                    width: img.naturalWidth,
-                    height: img.naturalHeight,
-                    isBlob: img.src.startsWith('blob:'),
-                    isData: img.src.startsWith('data:'),
-                  });
-                });
-            }
+            // 4. <source> inside <picture> elements (deep)
+            const allSources = deepQueryAll(document, 'picture source, source[type*="image"]');
+            allSources.forEach(s => {
+              if (s.srcset) addImg(s.srcset.split(',')[0].trim().split(' ')[0], 'picture-source', 0, 0);
+            });
 
             return { images, count: images.length };
           },
@@ -855,86 +840,65 @@ Use double newlines between timestamps!`;
         break;
 
       case 'download_images': {
-        // Extract images via fetch() in page context (avoids CORS + caching issues)
+        // Extract images via fetch() in page context — with shadow DOM traversal
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async (responseIndex) => {
-            // Broad selectors: standard + data-message-id + fallback
-            const selector = 'model-response img, message-content img, MESSAGE-CONTENT img, [data-message-id] img';
-            const allImgs = document.querySelectorAll(selector);
-            let filtered = Array.from(allImgs)
-              .filter(img => img.src && img.naturalWidth > 100);
-
-            // Fallback: if no response imgs found, grab all large imgs
-            if (filtered.length === 0) {
-              filtered = Array.from(document.querySelectorAll('img'))
-                .filter(img => img.src && img.naturalWidth > 200 && img.naturalHeight > 200
-                  && !img.src.includes('googleusercontent.com/a/')
-                  && !img.src.includes('lh3.google.com/a/'));
+            function deepQueryAll(root, selector) {
+              const results = Array.from(root.querySelectorAll(selector));
+              for (const el of root.querySelectorAll('*')) {
+                if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot, selector));
+              }
+              return results;
             }
 
-            // Deduplicate by URL path (strip query params + hash for Google CDN variants)
+            // Collect all image sources (img tags + canvas + bg-image)
+            const sources = [];
             const seen = new Set();
-            const unique = filtered.filter(img => {
-              const key = img.src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
-              if (seen.has(key)) return false;
+            function addSrc(src, w, h) {
+              if (!src || src.includes('chrome-extension://') || src.includes('googleusercontent.com/a/') || src.includes('lh3.google.com/a/')) return;
+              const key = src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
+              if (seen.has(key)) return;
               seen.add(key);
-              return true;
+              sources.push({ src, width: w, height: h });
+            }
+
+            deepQueryAll(document, 'img')
+              .filter(img => img.src && (img.naturalWidth > 100 || img.width > 100))
+              .forEach(img => addSrc(img.src, img.naturalWidth || img.width, img.naturalHeight || img.height));
+
+            deepQueryAll(document, 'canvas')
+              .filter(c => c.width > 100 && c.height > 100)
+              .forEach(c => { try { addSrc(c.toDataURL('image/png'), c.width, c.height); } catch(e) {} });
+
+            deepQueryAll(document, '[style*="background-image"]').forEach(el => {
+              const m = el.style.backgroundImage.match(/url\(["']?(.+?)["']?\)/);
+              if (m && m[1] && el.offsetWidth > 100) addSrc(m[1], el.offsetWidth, el.offsetHeight);
             });
 
-            // Filter by responseIndex
-            let imgs = unique;
-            const responses = document.querySelectorAll('model-response, [data-message-id]');
-            let targetIdx = responseIndex;
-            if (targetIdx === -1) targetIdx = responses.length - 1;
-            if (targetIdx >= 0 && targetIdx < responses.length) {
-              const responseImgs = new Set();
-              responses[targetIdx].querySelectorAll('img').forEach(i => responseImgs.add(i.src));
-              imgs = unique.filter(img => responseImgs.has(img.src));
-              // If response-scoped filter found nothing, keep all unique (fallback)
-              if (imgs.length === 0) imgs = unique;
-            }
+            deepQueryAll(document, 'picture source, source[type*="image"]').forEach(s => {
+              if (s.srcset) addSrc(s.srcset.split(',')[0].trim().split(' ')[0], 0, 0);
+            });
 
-            // Also grab canvas elements as data URLs
-            const canvases = document.querySelectorAll('model-response canvas, message-content canvas, [data-message-id] canvas');
-            const canvasImgs = [];
-            for (const c of canvases) {
-              if (c.width > 100 && c.height > 100) {
-                try {
-                  canvasImgs.push({ src: c.toDataURL('image/png'), width: c.width, height: c.height, isCanvas: true });
-                } catch(e) { /* tainted */ }
-              }
-            }
-
-            // Fetch each image as blob → data URL (bypasses cache + CORS)
+            // Fetch each as blob → data URL
             const results = [];
-            for (const img of imgs) {
+            for (const item of sources) {
               try {
-                const resp = await fetch(img.src, { cache: 'no-cache' });
+                if (item.src.startsWith('data:')) {
+                  results.push({ dataUrl: item.src, width: item.width, height: item.height, src: 'canvas' });
+                  continue;
+                }
+                const resp = await fetch(item.src, { cache: 'no-cache' });
                 const blob = await resp.blob();
                 const dataUrl = await new Promise(resolve => {
                   const reader = new FileReader();
                   reader.onloadend = () => resolve(reader.result);
                   reader.readAsDataURL(blob);
                 });
-                results.push({
-                  dataUrl,
-                  width: img.naturalWidth,
-                  height: img.naturalHeight,
-                  src: img.src.substring(0, 100),
-                });
+                results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
               } catch (e) {
-                results.push({
-                  src: img.src,
-                  width: img.naturalWidth,
-                  height: img.naturalHeight,
-                  error: e.message,
-                });
+                results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: e.message });
               }
-            }
-            // Append canvas images
-            for (const ci of canvasImgs) {
-              results.push({ dataUrl: ci.src, width: ci.width, height: ci.height, src: 'canvas' });
             }
             return { images: results, count: results.length };
           },
