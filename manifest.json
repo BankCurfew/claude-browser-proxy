@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gemini Proxy",
-  "version": "2.10.4",
+  "version": "2.10.5",
   "description": "Control Gemini from Claude Code via MQTT",
   "permissions": [
     "activeTab",
@@ -9,10 +9,13 @@
     "downloads",
     "sidePanel",
     "storage",
-    "tabs"
+    "tabs",
+    "cookies"
   ],
   "host_permissions": [
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"

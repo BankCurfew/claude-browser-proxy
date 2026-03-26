@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.4'; // Short version for badge display
+const VERSION = '2.10.5'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -880,58 +880,8 @@ Use double newlines between timestamps!`;
               if (s.srcset) addSrc(s.srcset.split(',')[0].trim().split(' ')[0], 0, 0);
             });
 
-            // Fetch images via injected page-context script (has cookies)
-            // Content script injects <script> into page, which fetches with cookies
-            // and posts dataURLs back via window.postMessage
-            const nonce = Math.random().toString(36).slice(2);
-            const results = await new Promise((resolve) => {
-              const handler = (event) => {
-                if (event.data && event.data._imgNonce === nonce) {
-                  window.removeEventListener('message', handler);
-                  resolve(event.data.results);
-                }
-              };
-              window.addEventListener('message', handler);
-              // Timeout after 15s
-              setTimeout(() => {
-                window.removeEventListener('message', handler);
-                resolve(sources.map(s => ({ src: s.src.substring(0, 100), width: s.width, height: s.height, error: 'timeout' })));
-              }, 15000);
-
-              const script = document.createElement('script');
-              script.textContent = `(async () => {
-                const sources = ${JSON.stringify(sources)};
-                const nonce = ${JSON.stringify(nonce)};
-                const results = [];
-                for (const item of sources) {
-                  try {
-                    if (item.src.startsWith('data:')) {
-                      results.push({ dataUrl: item.src, width: item.width, height: item.height, src: 'canvas' });
-                      continue;
-                    }
-                    const resp = await fetch(item.src, { credentials: 'include' });
-                    const ct = resp.headers.get('content-type') || '';
-                    if (!ct.startsWith('image/')) {
-                      results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: 'not image: ' + ct });
-                      continue;
-                    }
-                    const blob = await resp.blob();
-                    const dataUrl = await new Promise(r => {
-                      const reader = new FileReader();
-                      reader.onloadend = () => r(reader.result);
-                      reader.readAsDataURL(blob);
-                    });
-                    results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
-                  } catch (e) {
-                    results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: e.message });
-                  }
-                }
-                window.postMessage({ _imgNonce: nonce, results }, '*');
-              })();`;
-              document.documentElement.appendChild(script);
-              script.remove();
-            });
-            return { images: results, count: results.length };
+            // Return sources only — background script will fetch with cookies
+            return { sources, count: sources.length };
           },
           args: [command.responseIndex ?? -1]
         });
@@ -942,31 +892,55 @@ Use double newlines between timestamps!`;
           break;
         }
 
-        // Download each image from data URL
+        // Fetch cookies for googleusercontent.com (image CDN)
+        let cookieHeader = '';
+        try {
+          const cookies = await chrome.cookies.getAll({ domain: '.google.com' });
+          cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        } catch (e) { /* cookies permission may not be available */ }
+
+        // Download each image — fetch with cookies in background, then download dataURL
         const downloads = [];
         const timestamp = Date.now();
-        for (let i = 0; i < imgData.images.length; i++) {
-          const img = imgData.images[i];
+        for (let i = 0; i < imgData.sources.length; i++) {
+          const item = imgData.sources[i];
           const filename = command.prefix
             ? `${command.prefix}_${i + 1}.png`
             : `gemini_${timestamp}_${i + 1}.png`;
 
-          if (img.dataUrl) {
-            try {
-              const did = await chrome.downloads.download({ url: img.dataUrl, filename });
-              downloads.push({ downloadId: did, filename, width: img.width, height: img.height });
-            } catch (e) {
-              downloads.push({ error: e.message, filename });
+          try {
+            // Skip data URLs — download directly
+            if (item.src.startsWith('data:')) {
+              const did = await chrome.downloads.download({ url: item.src, filename });
+              downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'data_url' });
+              continue;
             }
-          } else if (img.src) {
-            // Fallback: direct URL download with cache-bust
-            try {
-              const bustUrl = img.src + (img.src.includes('?') ? '&' : '?') + '_t=' + Date.now();
-              const did = await chrome.downloads.download({ url: bustUrl, filename });
-              downloads.push({ downloadId: did, filename, width: img.width, height: img.height, method: 'direct_url' });
-            } catch (e) {
-              downloads.push({ skipped: true, src: img.src, reason: e.message });
+
+            // Fetch image from background with cookies
+            const fetchOpts = {};
+            if (cookieHeader) {
+              fetchOpts.headers = { 'Cookie': cookieHeader };
             }
+            const resp = await fetch(item.src, fetchOpts);
+            const ct = resp.headers.get('content-type') || '';
+
+            if (ct.startsWith('image/')) {
+              // Got actual image — convert to data URL and download
+              const blob = await resp.blob();
+              const reader = new FileReader();
+              const dataUrl = await new Promise(resolve => {
+                reader.onloadend = () => resolve(reader.result);
+                reader.readAsDataURL(blob);
+              });
+              const did = await chrome.downloads.download({ url: dataUrl, filename });
+              downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'cookie_fetch' });
+            } else {
+              // Not an image — try direct download as last resort
+              const did = await chrome.downloads.download({ url: item.src, filename });
+              downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'direct_url', contentType: ct });
+            }
+          } catch (e) {
+            downloads.push({ error: e.message, filename, src: item.src.substring(0, 100) });
           }
         }
 
