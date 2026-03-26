@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.6'; // Short version for badge display
+const VERSION = '2.10.7'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -925,16 +925,19 @@ Use double newlines between timestamps!`;
             const ct = resp.headers.get('content-type') || '';
 
             if (ct.startsWith('image/')) {
-              // Got actual image — create blob URL for download (preserves filename)
-              const blob = await resp.blob();
-              const blobUrl = URL.createObjectURL(blob);
+              // Got actual image — convert to base64 data URL and download
+              const arrayBuf = await resp.arrayBuffer();
+              const bytes = new Uint8Array(arrayBuf);
+              let binary = '';
+              for (let b = 0; b < bytes.length; b++) binary += String.fromCharCode(bytes[b]);
+              const base64 = btoa(binary);
+              // Use image/png mime to help Chrome with filename
+              const dataUrl = `data:image/png;base64,${base64}`;
               const did = await chrome.downloads.download({
-                url: blobUrl,
+                url: dataUrl,
                 filename,
                 conflictAction: 'uniquify'
               });
-              // Clean up blob URL after download starts
-              setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
               downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'cookie_fetch' });
             } else {
               // Not an image — try direct download as last resort
