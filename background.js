@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.0'; // Short version for badge display
+const VERSION = '2.10.1'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -646,6 +646,7 @@ Use double newlines between timestamps!`;
       case 'get_images':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN',
           func: (onlyResponses) => {
             // Helper: recursively walk shadow DOMs to find all elements matching tag
             function deepQueryAll(root, selector) {
@@ -840,9 +841,10 @@ Use double newlines between timestamps!`;
         break;
 
       case 'download_images': {
-        // Extract images via fetch() in page context — with shadow DOM traversal
+        // Extract images via fetch() in MAIN world — needs page cookies for Gemini CDN
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN',
           func: async (responseIndex) => {
             function deepQueryAll(root, selector) {
               const results = Array.from(root.querySelectorAll(selector));
