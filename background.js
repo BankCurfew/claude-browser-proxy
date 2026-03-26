@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.9.39'; // Short version for badge display
+const VERSION = '2.10.0'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
