@@ -647,8 +647,9 @@ Use double newlines between timestamps!`;
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (onlyResponses) => {
+            // 1. Standard <img> tags (original approach)
             const container = onlyResponses
-              ? 'model-response img, message-content img, MESSAGE-CONTENT img'
+              ? 'model-response img, message-content img, MESSAGE-CONTENT img, [data-message-id] img'
               : 'img';
             const imgs = document.querySelectorAll(container);
             const images = Array.from(imgs)
@@ -662,6 +663,63 @@ Use double newlines between timestamps!`;
                 isBlob: img.src.startsWith('blob:'),
                 isData: img.src.startsWith('data:'),
               }));
+
+            // 2. Canvas elements (Gemini may render generated images on canvas)
+            const canvases = document.querySelectorAll('model-response canvas, message-content canvas, [data-message-id] canvas, canvas');
+            Array.from(canvases)
+              .filter(c => c.width > 100 && c.height > 100)
+              .forEach((c, i) => {
+                try {
+                  images.push({
+                    index: images.length,
+                    src: c.toDataURL('image/png'),
+                    alt: 'canvas-image',
+                    width: c.width,
+                    height: c.height,
+                    isBlob: false,
+                    isData: true,
+                  });
+                } catch(e) { /* tainted canvas */ }
+              });
+
+            // 3. Background images on divs (Gemini sometimes uses inline styles)
+            const bgDivs = document.querySelectorAll('model-response [style*="background-image"], message-content [style*="background-image"], [data-message-id] [style*="background-image"]');
+            Array.from(bgDivs).forEach(el => {
+              const bg = el.style.backgroundImage;
+              const match = bg.match(/url\(["']?(.+?)["']?\)/);
+              if (match && match[1] && el.offsetWidth > 100) {
+                images.push({
+                  index: images.length,
+                  src: match[1],
+                  alt: 'bg-image',
+                  width: el.offsetWidth,
+                  height: el.offsetHeight,
+                  isBlob: match[1].startsWith('blob:'),
+                  isData: match[1].startsWith('data:'),
+                });
+              }
+            });
+
+            // 4. All large <img> anywhere as fallback (if response selectors found nothing)
+            if (images.length === 0) {
+              const allImgs = document.querySelectorAll('img');
+              Array.from(allImgs)
+                .filter(img => img.src && img.naturalWidth > 200 && img.naturalHeight > 200
+                  && !img.src.includes('googleusercontent.com/a/') // skip profile pics
+                  && !img.src.includes('lh3.google.com/a/'))
+                .forEach((img, i) => {
+                  images.push({
+                    index: i,
+                    src: img.src,
+                    alt: img.alt || '',
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    isBlob: img.src.startsWith('blob:'),
+                    isData: img.src.startsWith('data:'),
+                  });
+                });
+            }
+
             return { images, count: images.length };
           },
           args: [command.onlyResponses !== false]
@@ -801,16 +859,23 @@ Use double newlines between timestamps!`;
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async (responseIndex) => {
-            // Use same selectors as get_images for consistency
-            const selector = 'model-response img, message-content img, MESSAGE-CONTENT img';
+            // Broad selectors: standard + data-message-id + fallback
+            const selector = 'model-response img, message-content img, MESSAGE-CONTENT img, [data-message-id] img';
             const allImgs = document.querySelectorAll(selector);
-            const filtered = Array.from(allImgs)
+            let filtered = Array.from(allImgs)
               .filter(img => img.src && img.naturalWidth > 100);
+
+            // Fallback: if no response imgs found, grab all large imgs
+            if (filtered.length === 0) {
+              filtered = Array.from(document.querySelectorAll('img'))
+                .filter(img => img.src && img.naturalWidth > 200 && img.naturalHeight > 200
+                  && !img.src.includes('googleusercontent.com/a/')
+                  && !img.src.includes('lh3.google.com/a/'));
+            }
 
             // Deduplicate by URL path (strip query params + hash for Google CDN variants)
             const seen = new Set();
             const unique = filtered.filter(img => {
-              // Normalize: strip query params, hash, and trailing size params (=s1024-rj etc)
               const key = img.src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
               if (seen.has(key)) return false;
               seen.add(key);
@@ -818,22 +883,28 @@ Use double newlines between timestamps!`;
             });
 
             // Filter by responseIndex
-            // -1 (default) = LAST response only (most common use case)
-            // -2 = ALL responses (no filter)
-            // >= 0 = specific response by index
             let imgs = unique;
-            const responses = document.querySelectorAll('model-response');
+            const responses = document.querySelectorAll('model-response, [data-message-id]');
             let targetIdx = responseIndex;
-            if (targetIdx === -1) {
-              // Default: last response only
-              targetIdx = responses.length - 1;
-            }
+            if (targetIdx === -1) targetIdx = responses.length - 1;
             if (targetIdx >= 0 && targetIdx < responses.length) {
               const responseImgs = new Set();
               responses[targetIdx].querySelectorAll('img').forEach(i => responseImgs.add(i.src));
               imgs = unique.filter(img => responseImgs.has(img.src));
+              // If response-scoped filter found nothing, keep all unique (fallback)
+              if (imgs.length === 0) imgs = unique;
             }
-            // targetIdx === -2 means all responses, no filtering
+
+            // Also grab canvas elements as data URLs
+            const canvases = document.querySelectorAll('model-response canvas, message-content canvas, [data-message-id] canvas');
+            const canvasImgs = [];
+            for (const c of canvases) {
+              if (c.width > 100 && c.height > 100) {
+                try {
+                  canvasImgs.push({ src: c.toDataURL('image/png'), width: c.width, height: c.height, isCanvas: true });
+                } catch(e) { /* tainted */ }
+              }
+            }
 
             // Fetch each image as blob → data URL (bypasses cache + CORS)
             const results = [];
@@ -860,6 +931,10 @@ Use double newlines between timestamps!`;
                   error: e.message,
                 });
               }
+            }
+            // Append canvas images
+            for (const ci of canvasImgs) {
+              results.push({ dataUrl: ci.src, width: ci.width, height: ci.height, src: 'canvas' });
             }
             return { images: results, count: results.length };
           },
