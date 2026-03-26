@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.1'; // Short version for badge display
+const VERSION = '2.10.2'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -882,7 +882,7 @@ Use double newlines between timestamps!`;
               if (s.srcset) addSrc(s.srcset.split(',')[0].trim().split(' ')[0], 0, 0);
             });
 
-            // Fetch each as blob → data URL
+            // Convert each image to data URL via canvas draw or fetch+blob
             const results = [];
             for (const item of sources) {
               try {
@@ -890,14 +890,68 @@ Use double newlines between timestamps!`;
                   results.push({ dataUrl: item.src, width: item.width, height: item.height, src: 'canvas' });
                   continue;
                 }
-                const resp = await fetch(item.src, { cache: 'no-cache' });
-                const blob = await resp.blob();
-                const dataUrl = await new Promise(resolve => {
-                  const reader = new FileReader();
-                  reader.onloadend = () => resolve(reader.result);
-                  reader.readAsDataURL(blob);
-                });
-                results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
+
+                // Method 1: Draw existing DOM img to canvas (works even with CORS images already loaded)
+                let dataUrl = null;
+                const domImgs = document.querySelectorAll('img');
+                for (const img of domImgs) {
+                  if (img.src === item.src && img.naturalWidth > 0) {
+                    try {
+                      const c = document.createElement('canvas');
+                      c.width = img.naturalWidth;
+                      c.height = img.naturalHeight;
+                      const ctx = c.getContext('2d');
+                      ctx.drawImage(img, 0, 0);
+                      dataUrl = c.toDataURL('image/png');
+                      break;
+                    } catch (e) { /* tainted canvas, try next method */ }
+                  }
+                }
+
+                // Method 2: Re-fetch with crossorigin img element
+                if (!dataUrl) {
+                  try {
+                    dataUrl = await new Promise((resolve, reject) => {
+                      const img = new Image();
+                      img.crossOrigin = 'anonymous';
+                      img.onload = () => {
+                        try {
+                          const c = document.createElement('canvas');
+                          c.width = img.naturalWidth;
+                          c.height = img.naturalHeight;
+                          const ctx = c.getContext('2d');
+                          ctx.drawImage(img, 0, 0);
+                          resolve(c.toDataURL('image/png'));
+                        } catch (e) { reject(e); }
+                      };
+                      img.onerror = reject;
+                      setTimeout(() => reject(new Error('timeout')), 10000);
+                      img.src = item.src;
+                    });
+                  } catch (e) { /* crossorigin blocked, try fetch */ }
+                }
+
+                // Method 3: Fetch as blob (MAIN world has page cookies)
+                if (!dataUrl) {
+                  const resp = await fetch(item.src, { credentials: 'include', cache: 'no-cache' });
+                  const ct = resp.headers.get('content-type') || '';
+                  if (!ct.startsWith('image/')) {
+                    results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: `not image: ${ct}` });
+                    continue;
+                  }
+                  const blob = await resp.blob();
+                  dataUrl = await new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.readAsDataURL(blob);
+                  });
+                }
+
+                if (dataUrl) {
+                  results.push({ dataUrl, width: item.width, height: item.height, src: item.src.substring(0, 100) });
+                } else {
+                  results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: 'all methods failed' });
+                }
               } catch (e) {
                 results.push({ src: item.src.substring(0, 100), width: item.width, height: item.height, error: e.message });
               }
