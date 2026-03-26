@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.2'; // Short version for badge display
+const VERSION = '2.10.3'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 const TOPICS = {
   command: 'claude/browser/command',
@@ -646,7 +646,6 @@ Use double newlines between timestamps!`;
       case 'get_images':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          world: 'MAIN',
           func: (onlyResponses) => {
             // Helper: recursively walk shadow DOMs to find all elements matching tag
             function deepQueryAll(root, selector) {
@@ -841,10 +840,9 @@ Use double newlines between timestamps!`;
         break;
 
       case 'download_images': {
-        // Extract images via fetch() in MAIN world — needs page cookies for Gemini CDN
+        // Extract images via canvas draw + fetch in content script context
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          world: 'MAIN',
           func: async (responseIndex) => {
             function deepQueryAll(root, selector) {
               const results = Array.from(root.querySelectorAll(selector));
@@ -891,9 +889,9 @@ Use double newlines between timestamps!`;
                   continue;
                 }
 
-                // Method 1: Draw existing DOM img to canvas (works even with CORS images already loaded)
+                // Method 1: Draw existing DOM img to canvas (works for already-loaded images)
                 let dataUrl = null;
-                const domImgs = document.querySelectorAll('img');
+                const domImgs = deepQueryAll(document, 'img');
                 for (const img of domImgs) {
                   if (img.src === item.src && img.naturalWidth > 0) {
                     try {
