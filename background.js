@@ -3,8 +3,18 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.7'; // Short version for badge display
+const VERSION = '2.10.8'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
+
+// Map of downloadId → desired filename for renaming data URL downloads
+const pendingFilenames = new Map();
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  const wanted = pendingFilenames.get(item.id);
+  if (wanted) {
+    pendingFilenames.delete(item.id);
+    suggest({ filename: wanted, conflictAction: 'uniquify' });
+  }
+});
 const TOPICS = {
   command: 'claude/browser/command',
   response: 'claude/browser/response',
@@ -933,11 +943,9 @@ Use double newlines between timestamps!`;
               const base64 = btoa(binary);
               // Use image/png mime to help Chrome with filename
               const dataUrl = `data:image/png;base64,${base64}`;
-              const did = await chrome.downloads.download({
-                url: dataUrl,
-                filename,
-                conflictAction: 'uniquify'
-              });
+              const did = await chrome.downloads.download({ url: dataUrl });
+              // Register filename override via onDeterminingFilename listener
+              pendingFilenames.set(did, filename);
               downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'cookie_fetch' });
             } else {
               // Not an image — try direct download as last resort
