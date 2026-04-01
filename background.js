@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.8'; // Short version for badge display
+const VERSION = '2.10.9'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
@@ -656,6 +656,7 @@ Use double newlines between timestamps!`;
       case 'get_images':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN', // Must match shadow-fix.js world to see forced-open shadow roots
           func: (onlyResponses) => {
             // Helper: recursively walk shadow DOMs to find all elements matching tag
             function deepQueryAll(root, selector) {
@@ -853,6 +854,7 @@ Use double newlines between timestamps!`;
         // Extract images via canvas draw + fetch in content script context
         const imgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN', // Must match shadow-fix.js world to see forced-open shadow roots
           func: async (responseIndex) => {
             function deepQueryAll(root, selector) {
               const results = Array.from(root.querySelectorAll(selector));
