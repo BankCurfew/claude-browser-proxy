@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.11.1'; // Short version for badge display
+const VERSION = '2.11.2'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
@@ -921,26 +921,22 @@ Use double newlines between timestamps!`;
                   for (let i = 0; i < attrs.length; i += 2) {
                     if (attrs[i] === 'src') {
                       const src = attrs[i + 1];
-                      if (src && !src.includes('chrome-extension://') &&
-                          !src.includes('googleusercontent.com/a/') &&
-                          !src.includes('lh3.google.com/a/') &&
-                          !src.includes('/favicon') &&
-                          !src.startsWith('data:image/svg') &&
-                          !src.startsWith('data:image/gif')) {
-                        // Get width/height from attributes if available
-                        let w = 0, h = 0;
-                        for (let j = 0; j < attrs.length; j += 2) {
-                          if (attrs[j] === 'width') w = parseInt(attrs[j + 1]) || 0;
-                          if (attrs[j] === 'height') h = parseInt(attrs[j + 1]) || 0;
-                        }
+                      // Aggressive junk URL exclusion — profile pics, icons, SVGs
+                      const isJunk = !src ||
+                        src.includes('chrome-extension://') ||
+                        src.includes('googleusercontent.com/a/') ||
+                        src.includes('lh3.google.com/a/') ||
+                        src.includes('lh3.googleusercontent.com/a') ||
+                        src.includes('/favicon') ||
+                        src.includes('accounts.google.com') ||
+                        src.includes('/avatar') ||
+                        src.startsWith('data:image/svg') ||
+                        src.startsWith('data:image/gif');
+                      if (!isJunk) {
                         const key = src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
-                        // Strict size filter: both dims > 200 if known, or src looks like generated image
-                        const isLarge = (w > 200 && h > 200);
-                        const isGenerated = src.includes('blob:') || (src.startsWith('data:image/png') && src.length > 1000);
-                        const isGoogleImg = src.includes('googleusercontent.com') && !src.includes('/a/') && (w === 0 || w > 200);
-                        if (!cdpSeen.has(key) && (isLarge || isGenerated || isGoogleImg)) {
+                        if (!cdpSeen.has(key)) {
                           cdpSeen.add(key);
-                          cdpSources.push({ src, width: w, height: h });
+                          cdpSources.push({ src, width: 0, height: 0 });
                         }
                       }
                       break;
@@ -1006,6 +1002,11 @@ Use double newlines between timestamps!`;
             if (ct.startsWith('image/')) {
               // Got actual image — convert to base64 data URL and download
               const arrayBuf = await resp.arrayBuffer();
+              // Filesize gate: skip tiny images (<10KB = profile pics, icons)
+              if (arrayBuf.byteLength < 10240) {
+                console.log(`[download_images] Skipping tiny image (${arrayBuf.byteLength}B): ${item.src.substring(0, 80)}`);
+                continue;
+              }
               const bytes = new Uint8Array(arrayBuf);
               let binary = '';
               for (let b = 0; b < bytes.length; b++) binary += String.fromCharCode(bytes[b]);
@@ -1015,7 +1016,7 @@ Use double newlines between timestamps!`;
               const did = await chrome.downloads.download({ url: dataUrl });
               // Register filename override via onDeterminingFilename listener
               pendingFilenames.set(did, filename);
-              downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'cookie_fetch' });
+              downloads.push({ downloadId: did, filename, width: item.width, height: item.height, size: arrayBuf.byteLength, method: 'cookie_fetch' });
             } else {
               // Not an image — try direct download as last resort
               const did = await chrome.downloads.download({ url: item.src, filename });
