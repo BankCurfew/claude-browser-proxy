@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.11.0'; // Short version for badge display
+const VERSION = '2.11.1'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
@@ -924,7 +924,9 @@ Use double newlines between timestamps!`;
                       if (src && !src.includes('chrome-extension://') &&
                           !src.includes('googleusercontent.com/a/') &&
                           !src.includes('lh3.google.com/a/') &&
-                          !src.startsWith('data:image/svg')) {
+                          !src.includes('/favicon') &&
+                          !src.startsWith('data:image/svg') &&
+                          !src.startsWith('data:image/gif')) {
                         // Get width/height from attributes if available
                         let w = 0, h = 0;
                         for (let j = 0; j < attrs.length; j += 2) {
@@ -932,8 +934,11 @@ Use double newlines between timestamps!`;
                           if (attrs[j] === 'height') h = parseInt(attrs[j + 1]) || 0;
                         }
                         const key = src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
-                        if (!cdpSeen.has(key) && (w > 100 || h > 100 || w === 0)) {
-                          // w===0 means no width attr — include anyway (may be CSS-sized)
+                        // Strict size filter: both dims > 200 if known, or src looks like generated image
+                        const isLarge = (w > 200 && h > 200);
+                        const isGenerated = src.includes('blob:') || (src.startsWith('data:image/png') && src.length > 1000);
+                        const isGoogleImg = src.includes('googleusercontent.com') && !src.includes('/a/') && (w === 0 || w > 200);
+                        if (!cdpSeen.has(key) && (isLarge || isGenerated || isGoogleImg)) {
                           cdpSeen.add(key);
                           cdpSources.push({ src, width: w, height: h });
                         }
