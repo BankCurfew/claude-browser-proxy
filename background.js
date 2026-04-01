@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.10.9'; // Short version for badge display
+const VERSION = '2.11.0'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
@@ -898,9 +898,71 @@ Use double newlines between timestamps!`;
           args: [command.responseIndex ?? -1]
         });
 
-        const imgData = imgResults[0]?.result;
+        let imgData = imgResults[0]?.result;
+
+        // ── CDP Fallback: if deepQueryAll found nothing, pierce shadow DOM via debugger ──
         if (!imgData || imgData.count === 0) {
-          result = { error: 'No images found in responses' };
+          console.log('[download_images] deepQueryAll found 0 images — trying CDP fallback');
+          try {
+            await chrome.debugger.attach({ tabId: tab.id }, '1.3');
+            try {
+              const doc = await chrome.debugger.sendCommand(
+                { tabId: tab.id }, 'DOM.getDocument', { depth: -1, pierce: true }
+              );
+
+              // Walk the full DOM tree for IMG nodes with src attributes
+              const cdpSources = [];
+              const cdpSeen = new Set();
+              function walkNode(node) {
+                if (!node) return;
+                // Check if this is an IMG element
+                if (node.nodeName === 'IMG' && node.attributes) {
+                  const attrs = node.attributes;
+                  for (let i = 0; i < attrs.length; i += 2) {
+                    if (attrs[i] === 'src') {
+                      const src = attrs[i + 1];
+                      if (src && !src.includes('chrome-extension://') &&
+                          !src.includes('googleusercontent.com/a/') &&
+                          !src.includes('lh3.google.com/a/') &&
+                          !src.startsWith('data:image/svg')) {
+                        // Get width/height from attributes if available
+                        let w = 0, h = 0;
+                        for (let j = 0; j < attrs.length; j += 2) {
+                          if (attrs[j] === 'width') w = parseInt(attrs[j + 1]) || 0;
+                          if (attrs[j] === 'height') h = parseInt(attrs[j + 1]) || 0;
+                        }
+                        const key = src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
+                        if (!cdpSeen.has(key) && (w > 100 || h > 100 || w === 0)) {
+                          // w===0 means no width attr — include anyway (may be CSS-sized)
+                          cdpSeen.add(key);
+                          cdpSources.push({ src, width: w, height: h });
+                        }
+                      }
+                      break;
+                    }
+                  }
+                }
+                // Recurse into children (including shadow DOM children via pierce)
+                if (node.children) node.children.forEach(walkNode);
+                if (node.contentDocument) walkNode(node.contentDocument);
+                if (node.shadowRoots) node.shadowRoots.forEach(walkNode);
+              }
+              walkNode(doc.root);
+
+              if (cdpSources.length > 0) {
+                console.log(`[download_images] CDP found ${cdpSources.length} images`);
+                imgData = { sources: cdpSources, count: cdpSources.length, method: 'cdp' };
+              }
+            } finally {
+              await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+            }
+          } catch (cdpErr) {
+            console.error('[download_images] CDP fallback failed:', cdpErr.message);
+          }
+        }
+
+        if (!imgData || imgData.count === 0) {
+          result = { error: 'No images found (both DOM and CDP methods failed)' };
           break;
         }
 
