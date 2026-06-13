@@ -1414,9 +1414,12 @@ Use double newlines between timestamps!`;
       }
 
       case 'delete_chats_bulk': {
-        // Delete multiple old conversations from Gemini sidebar
-        // command.count = number of chats to delete (default: all)
-        // command.keepRecent = number of recent chats to keep (default: 1)
+        // Delete old IMAGE GEN conversations from Gemini sidebar
+        // command.count = max chats to delete (default: 50)
+        // command.keepRecent = skip N most recent (default: 1)
+        // command.filter = title keyword filter (default: image-gen patterns)
+        // SAFETY: only deletes chats whose titles match image-gen patterns
+        // (short titles, image keywords) — never deletes personal chats
         if (!tab.url?.includes('gemini.google.com')) {
           result = { error: 'Not on Gemini page' };
           break;
@@ -1424,22 +1427,62 @@ Use double newlines between timestamps!`;
 
         const keepRecent = command.keepRecent ?? 1;
         const maxDelete = command.count ?? 50;
+        const filterKeywords = command.filter || null; // null = use default image-gen patterns
 
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: async (keepRecent, maxDelete) => {
+          func: async (keepRecent, maxDelete, filterKeywords) => {
             try {
               let deleted = 0;
+              let skipped = 0;
               let errors = [];
 
-              for (let round = 0; round < maxDelete; round++) {
+              // Image-gen title patterns — conversations created by gemini-gen.sh
+              // typically have titles like "a red circle on white background" or
+              // "generate image of sunset" — short, descriptive, image-related
+              const IMAGE_GEN_PATTERNS = [
+                /^(a |an |the |create |generate |make |draw |design |render |paint )/i,
+                /\b(image|photo|picture|poster|banner|logo|icon|illustration|artwork|portrait|landscape)\b/i,
+                /\b(red|blue|green|white|black|gold|silver|sunset|sunrise|circle|square|background)\b/i,
+                /\b(minimalist|realistic|abstract|cartoon|anime|3d|flat|gradient)\b/i,
+              ];
+
+              for (let round = 0; round < maxDelete + skipped; round++) {
+                if (deleted >= maxDelete) break;
+
                 // Re-query each round since DOM changes after deletion
                 const convItems = document.querySelectorAll('a[href*="/app/"]');
-                const deletable = Array.from(convItems).slice(keepRecent); // skip N most recent
+                const candidates = Array.from(convItems).slice(keepRecent);
 
-                if (deletable.length === 0) break;
+                if (candidates.length === 0) break;
 
-                const target = deletable[0];
+                // Find next candidate that matches image-gen pattern
+                let target = null;
+                let targetTitle = '';
+                for (const item of candidates) {
+                  const title = (item.textContent || item.title || '').trim();
+                  if (filterKeywords) {
+                    // Custom keyword filter
+                    if (title.toLowerCase().includes(filterKeywords.toLowerCase())) {
+                      target = item;
+                      targetTitle = title;
+                      break;
+                    }
+                  } else {
+                    // Default: match image-gen patterns
+                    const isImageGen = IMAGE_GEN_PATTERNS.some(p => p.test(title));
+                    if (isImageGen) {
+                      target = item;
+                      targetTitle = title;
+                      break;
+                    }
+                  }
+                }
+
+                if (!target) {
+                  // No more matching conversations
+                  break;
+                }
 
                 // Hover to reveal menu
                 target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
@@ -1502,12 +1545,12 @@ Use double newlines between timestamps!`;
                 await new Promise(r => setTimeout(r, 800));
               }
 
-              return { success: true, deleted, errors: errors.length ? errors : undefined };
+              return { success: true, deleted, skipped, errors: errors.length ? errors : undefined };
             } catch (e) {
               return { error: e.message };
             }
           },
-          args: [keepRecent, maxDelete]
+          args: [keepRecent, maxDelete, filterKeywords]
         });
         result = result[0]?.result || { error: 'Script returned null' };
         break;
