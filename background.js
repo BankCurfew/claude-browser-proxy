@@ -1325,70 +1325,51 @@ Use double newlines between timestamps!`;
           target: { tabId: tab.id },
           func: async () => {
             try {
-              // Find the active/selected conversation in sidebar
-              // Gemini marks the current chat with aria-selected or a highlighted class
-              const sidebar = document.querySelector('nav, [role="navigation"], .conversation-list, [class*="sidebar"]');
-
-              // Strategy 1: Click the 3-dot menu on the current conversation
-              // The current conversation is usually the one with a selected/active state
-              const allConvItems = document.querySelectorAll('a[href*="/app/"], [data-conversation-id]');
-              let currentConv = null;
+              // Gemini uses: a[href*="/app/"] for conversation links
+              // Menu button: button.gem-conversation-actions-menu-button
+              //   aria-label="More options for [title]"
               const currentPath = window.location.pathname;
+              const convId = currentPath.split('/app/')[1];
 
-              for (const item of allConvItems) {
-                const href = item.getAttribute('href') || '';
-                if (href && currentPath.includes(href.split('/app/')[1] || '___none___')) {
-                  currentConv = item;
-                  break;
-                }
-              }
-
-              // Strategy 2: find by aria-current or active class
-              if (!currentConv) {
-                currentConv = document.querySelector('[aria-current="page"]') ||
-                  document.querySelector('.selected, .active, [data-active="true"]');
-              }
-
-              if (!currentConv) {
-                // Strategy 3: hover over conversation items to reveal menu
-                // Try the first conversation in the sidebar (most recent)
-                const firstConv = allConvItems[0];
-                if (firstConv) currentConv = firstConv;
-              }
-
-              if (!currentConv) {
-                return { error: 'No conversation found to delete' };
-              }
-
-              // Hover to reveal the 3-dot menu button
-              currentConv.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-              await new Promise(r => setTimeout(r, 300));
-
-              // Find the 3-dot menu button (usually a button with ⋮ or mat-icon)
-              const container = currentConv.closest('li, [class*="conversation"], [class*="chat-item"]') || currentConv;
-              let menuBtn = container.querySelector('button[aria-label*="more"], button[aria-label*="More"], button[aria-label*="options"], button[aria-label*="Options"], button[aria-label*="menu"]');
-
-              if (!menuBtn) {
-                // Try finding any button with 3-dot icon (⋮ or three_dots mat-icon)
-                const btns = container.querySelectorAll('button');
-                for (const b of btns) {
-                  const text = b.textContent?.trim();
-                  if (text === '⋮' || text === 'more_vert' || text === 'more_horiz' || b.querySelector('[class*="more"]')) {
-                    menuBtn = b;
-                    break;
+              // Strategy 1: Find menu button matching current conversation URL
+              let menuBtn = null;
+              if (convId) {
+                const convLink = document.querySelector(`a[href*="/app/${convId}"]`);
+                if (convLink) {
+                  // Menu button is a sibling in the same parent container
+                  const parent = convLink.closest('[class*="conversation"], li') || convLink.parentElement;
+                  if (parent) {
+                    menuBtn = parent.querySelector('.gem-conversation-actions-menu-button') ||
+                      parent.querySelector('button[aria-label^="More options for"]');
                   }
                 }
               }
 
+              // Strategy 2: Find by conversation title from aria-label
               if (!menuBtn) {
-                return { error: 'Menu button not found on conversation item' };
+                // Get all menu buttons, find the one for the active conversation
+                const allMenuBtns = document.querySelectorAll('.gem-conversation-actions-menu-button');
+                if (allMenuBtns.length > 0) {
+                  // First button is most recent conversation (likely the one we just created)
+                  menuBtn = allMenuBtns[0];
+                }
               }
 
-              menuBtn.click();
-              await new Promise(r => setTimeout(r, 400));
+              // Strategy 3: Any button with "More options for" aria-label
+              if (!menuBtn) {
+                menuBtn = document.querySelector('button[aria-label^="More options for"]');
+              }
 
-              // Find and click "Delete" in the dropdown menu
-              const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"], mat-menu-item, button');
+              if (!menuBtn) {
+                return { error: 'Menu button not found — no .gem-conversation-actions-menu-button in DOM' };
+              }
+
+              // Click menu button
+              menuBtn.click();
+              await new Promise(r => setTimeout(r, 500));
+
+              // Find and click "Delete" in the Material dropdown menu
+              const menuItems = document.querySelectorAll('[role="menuitem"], mat-menu-item, .mat-mdc-menu-item');
               let deleteClicked = false;
               for (const item of menuItems) {
                 const text = item.textContent?.trim().toLowerCase();
@@ -1400,26 +1381,27 @@ Use double newlines between timestamps!`;
               }
 
               if (!deleteClicked) {
+                // Close menu if delete not found
+                document.body.click();
                 return { error: 'Delete option not found in menu' };
               }
 
               // Wait for confirmation dialog and click confirm
-              await new Promise(r => setTimeout(r, 500));
-              const confirmBtns = document.querySelectorAll('button, [role="button"]');
-              for (const btn of confirmBtns) {
-                const text = btn.textContent?.trim().toLowerCase();
-                if (text === 'delete' || text === 'confirm' || text === 'ลบ' || text === 'ok') {
-                  // Make sure this is in a dialog/overlay, not the main page
-                  const dialog = btn.closest('[role="dialog"], [class*="dialog"], [class*="modal"], mat-dialog-container, [class*="overlay"]');
-                  if (dialog) {
+              await new Promise(r => setTimeout(r, 600));
+              const dialogs = document.querySelectorAll('mat-dialog-container, [role="dialog"], [class*="dialog"]');
+              for (const dialog of dialogs) {
+                const btns = dialog.querySelectorAll('button');
+                for (const btn of btns) {
+                  const text = btn.textContent?.trim().toLowerCase();
+                  if (text === 'delete' || text === 'confirm' || text === 'ลบ') {
                     btn.click();
-                    return { success: true, method: 'menu_delete_confirm' };
+                    return { success: true, method: 'gem_menu_delete' };
                   }
                 }
               }
 
-              // If no dialog confirmation needed, deletion may have happened directly
-              return { success: true, method: 'menu_delete_direct' };
+              // No dialog — deletion may have happened directly
+              return { success: true, method: 'gem_menu_direct' };
             } catch (e) {
               return { error: e.message };
             }
@@ -1504,29 +1486,21 @@ Use double newlines between timestamps!`;
                 target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
                 await new Promise(r => setTimeout(r, 300));
 
-                const container = target.closest('li, [class*="conversation"], [class*="chat-item"]') || target;
-                let menuBtn = container.querySelector('button[aria-label*="more"], button[aria-label*="More"], button[aria-label*="options"], button[aria-label*="Options"], button[aria-label*="menu"]');
+                // Find menu button via Gemini's .gem-conversation-actions-menu-button
+                const container = target.closest('[class*="conversation"], li') || target.parentElement;
+                let menuBtn = container?.querySelector('.gem-conversation-actions-menu-button') ||
+                  container?.querySelector('button[aria-label^="More options for"]');
 
                 if (!menuBtn) {
-                  const btns = container.querySelectorAll('button');
-                  for (const b of btns) {
-                    const text = b.textContent?.trim();
-                    if (text === '⋮' || text === 'more_vert' || text === 'more_horiz' || b.querySelector('[class*="more"]')) {
-                      menuBtn = b;
-                      break;
-                    }
-                  }
-                }
-
-                if (!menuBtn) {
-                  errors.push(`Round ${round}: menu button not found`);
-                  break;
+                  errors.push(`Round ${round}: menu button not found for "${targetTitle.substring(0,30)}"`);
+                  skipped++;
+                  continue; // skip this one, try next
                 }
 
                 menuBtn.click();
-                await new Promise(r => setTimeout(r, 400));
+                await new Promise(r => setTimeout(r, 500));
 
-                const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"], mat-menu-item, button');
+                const menuItems = document.querySelectorAll('[role="menuitem"], mat-menu-item, .mat-mdc-menu-item');
                 let deleteClicked = false;
                 for (const item of menuItems) {
                   const text = item.textContent?.trim().toLowerCase();
@@ -1538,18 +1512,20 @@ Use double newlines between timestamps!`;
                 }
 
                 if (!deleteClicked) {
+                  document.body.click(); // close menu
                   errors.push(`Round ${round}: delete option not found`);
-                  break;
+                  skipped++;
+                  continue;
                 }
 
-                // Confirm deletion
-                await new Promise(r => setTimeout(r, 500));
-                const confirmBtns = document.querySelectorAll('button, [role="button"]');
-                for (const btn of confirmBtns) {
-                  const text = btn.textContent?.trim().toLowerCase();
-                  if (text === 'delete' || text === 'confirm' || text === 'ลบ' || text === 'ok') {
-                    const dialog = btn.closest('[role="dialog"], [class*="dialog"], [class*="modal"], mat-dialog-container, [class*="overlay"]');
-                    if (dialog) {
+                // Confirm deletion in Material dialog
+                await new Promise(r => setTimeout(r, 600));
+                const dialogs = document.querySelectorAll('mat-dialog-container, [role="dialog"]');
+                for (const dialog of dialogs) {
+                  const btns = dialog.querySelectorAll('button');
+                  for (const btn of btns) {
+                    const text = btn.textContent?.trim().toLowerCase();
+                    if (text === 'delete' || text === 'confirm' || text === 'ลบ') {
                       btn.click();
                       break;
                     }
