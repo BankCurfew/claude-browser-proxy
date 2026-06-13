@@ -676,10 +676,17 @@ Use double newlines between timestamps!`;
             function addImg(src, alt, width, height) {
               const key = src.substring(0, 200);
               if (seen.has(key)) return;
-              // Skip extension icons and tiny profile pics
+              // Skip UI decorations, extension icons, profile pics, SVGs
               if (src.includes('chrome-extension://')) return;
               if (src.includes('googleusercontent.com/a/')) return;
               if (src.includes('lh3.google.com/a/')) return;
+              if (src.includes('lh3.googleusercontent.com/a')) return;
+              if (src.includes('gstatic.com/')) return;
+              if (src.includes('/favicon')) return;
+              if (src.includes('accounts.google.com')) return;
+              if (src.includes('/avatar')) return;
+              if (src.endsWith('.svg') || src.includes('.svg?') || src.startsWith('data:image/svg')) return;
+              if (src.startsWith('data:image/gif')) return;
               seen.add(key);
               images.push({
                 index: images.length, src, alt: alt || '',
@@ -869,6 +876,10 @@ Use double newlines between timestamps!`;
             const seen = new Set();
             function addSrc(src, w, h) {
               if (!src || src.includes('chrome-extension://') || src.includes('googleusercontent.com/a/') || src.includes('lh3.google.com/a/')) return;
+              if (src.includes('lh3.googleusercontent.com/a')) return;
+              if (src.includes('gstatic.com/')) return;
+              if (src.includes('/favicon') || src.includes('accounts.google.com') || src.includes('/avatar')) return;
+              if (src.endsWith('.svg') || src.includes('.svg?') || src.startsWith('data:image/svg') || src.startsWith('data:image/gif')) return;
               const key = src.split('?')[0].split('#')[0].replace(/=s\d+-\w+$/, '');
               if (seen.has(key)) return;
               seen.add(key);
@@ -921,15 +932,17 @@ Use double newlines between timestamps!`;
                   for (let i = 0; i < attrs.length; i += 2) {
                     if (attrs[i] === 'src') {
                       const src = attrs[i + 1];
-                      // Aggressive junk URL exclusion — profile pics, icons, SVGs
+                      // Aggressive junk URL exclusion — profile pics, icons, SVGs, UI assets
                       const isJunk = !src ||
                         src.includes('chrome-extension://') ||
                         src.includes('googleusercontent.com/a/') ||
                         src.includes('lh3.google.com/a/') ||
                         src.includes('lh3.googleusercontent.com/a') ||
+                        src.includes('gstatic.com/') ||
                         src.includes('/favicon') ||
                         src.includes('accounts.google.com') ||
                         src.includes('/avatar') ||
+                        src.endsWith('.svg') || src.includes('.svg?') ||
                         src.startsWith('data:image/svg') ||
                         src.startsWith('data:image/gif');
                       if (!isJunk) {
