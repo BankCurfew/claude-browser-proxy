@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '2.11.2'; // Short version for badge display
+const VERSION = '3.0.0'; // Short version for badge display
 const MQTT_URL = 'ws://172.20.28.47:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
@@ -106,9 +106,9 @@ async function updateBadge(connected) {
   chrome.storage.local.set({ mqttConnected: connected });
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const onGemini = tab && tab.url && tab.url.includes('gemini.google.com');
-    chrome.action.setBadgeText({ text: VERSION }); // Always show full version "2.0.5"
-    if (onGemini && connected) {
+    const onAiSite = tab && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com') || tab.url.includes('chat.openai.com'));
+    chrome.action.setBadgeText({ text: VERSION }); // Always show full version
+    if (onAiSite && connected) {
       chrome.action.setBadgeBackgroundColor({ color: '#22c55e' }); // green
     } else {
       chrome.action.setBadgeBackgroundColor({ color: '#ef4444' }); // red
@@ -224,17 +224,20 @@ Use double newlines between timestamps!`;
       }
 
       case 'list_tabs':
-        // List all Gemini tabs
+        // List all AI tabs (Gemini + ChatGPT)
         const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+        const chatgptTabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] });
+        const allAiTabs = [...geminiTabs, ...chatgptTabs];
         result = {
-          tabs: geminiTabs.map(t => ({
+          tabs: allAiTabs.map(t => ({
             id: t.id,
             title: t.title,
             url: t.url,
             active: t.active,
-            windowId: t.windowId
+            windowId: t.windowId,
+            platform: t.url.includes('gemini.google.com') ? 'gemini' : 'chatgpt'
           })),
-          count: geminiTabs.length,
+          count: allAiTabs.length,
           success: true
         };
         publish(TOPICS.response, { ...result, id: command.id, action: command.action });
@@ -473,12 +476,13 @@ Use double newlines between timestamps!`;
         args: [tab.id]
       });
     } else {
-      // Find most recently active Gemini tab
-      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
-      if (geminiTabs.length > 0) {
-        // Sort by lastAccessed (most recent first)
-        geminiTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-        tab = geminiTabs[0];
+      // Find most recently active AI tab (Gemini or ChatGPT)
+      const geminiTabs2 = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+      const chatgptTabs2 = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] });
+      const allTabs = [...geminiTabs2, ...chatgptTabs2];
+      if (allTabs.length > 0) {
+        allTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+        tab = allTabs[0];
       }
       if (!tab) {
         [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -486,8 +490,9 @@ Use double newlines between timestamps!`;
     }
 
     if (!tab) throw new Error('No tab found');
-    if (!tab.url?.includes('gemini.google.com')) {
-      throw new Error('Tab is not Gemini. Please open gemini.google.com or use create_tab');
+    const isAiTab = tab.url?.includes('gemini.google.com') || tab.url?.includes('chatgpt.com') || tab.url?.includes('chat.openai.com');
+    if (!isAiTab) {
+      throw new Error('Tab is not Gemini or ChatGPT. Please open gemini.google.com or chatgpt.com');
     }
 
     // === GEMINI TAB ACTIONS ===
@@ -1548,6 +1553,359 @@ Use double newlines between timestamps!`;
         break;
       }
 
+      // ═══ ChatGPT Actions ═══
+
+      case 'chatgpt_chat': {
+        // Send message to ChatGPT
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+        const cgptText = command.text || '';
+        if (command.newChat) {
+          await chrome.tabs.update(tab.id, { url: 'https://chatgpt.com/' });
+          await new Promise(resolve => {
+            const listener = (tabId, info) => {
+              if (tabId === tab.id && info.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 8000);
+          });
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (text) => {
+            try {
+              // ChatGPT uses a ProseMirror editor or contenteditable div
+              const selectors = [
+                '#prompt-textarea',
+                'div[contenteditable="true"][id="prompt-textarea"]',
+                'textarea[data-id="root"]',
+                '[contenteditable="true"]',
+                'textarea'
+              ];
+              let input = null;
+              for (const sel of selectors) {
+                input = document.querySelector(sel);
+                if (input) break;
+              }
+              if (!input) return { error: 'Input not found' };
+
+              input.focus();
+
+              // ChatGPT uses ProseMirror — set innerHTML for <p> tags or use insertText
+              if (input.tagName === 'TEXTAREA') {
+                // Legacy textarea
+                const nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+                nativeSet.call(input, text);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              } else {
+                // ProseMirror contenteditable div
+                input.innerHTML = `<p>${text}</p>`;
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+              }
+
+              await new Promise(r => setTimeout(r, 300));
+
+              // Click send button
+              const sendBtn = document.querySelector('button[data-testid="send-button"]') ||
+                document.querySelector('button[aria-label="Send prompt"]') ||
+                document.querySelector('form button[type="submit"]');
+
+              if (sendBtn && !sendBtn.disabled) {
+                sendBtn.click();
+                return { success: true, sent: text.substring(0, 50), method: 'button' };
+              }
+
+              // Fallback: Enter key
+              input.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true
+              }));
+              return { success: true, sent: text.substring(0, 50), method: 'enter' };
+            } catch (e) {
+              return { error: e.message };
+            }
+          },
+          args: [cgptText]
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
+      case 'chatgpt_get_state': {
+        // Get ChatGPT state — response count, loading status
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
+            const isLoading = !!document.querySelector('.result-streaming, [class*="streaming"], button[aria-label="Stop generating"]');
+            return {
+              responseCount: responses.length,
+              loading: isLoading,
+              url: window.location.href
+            };
+          }
+        });
+        result = result[0]?.result || { responseCount: 0, loading: false };
+        break;
+      }
+
+      case 'chatgpt_get_images': {
+        // Find DALL-E generated images in ChatGPT responses
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const images = [];
+            const seen = new Set();
+
+            // DALL-E images appear as <img> inside assistant messages
+            const assistantMsgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            assistantMsgs.forEach((msg, msgIdx) => {
+              msg.querySelectorAll('img').forEach(img => {
+                const src = img.src || '';
+                if (!src || src.includes('data:image/svg') || src.includes('/favicon') ||
+                    src.includes('avatar') || src.includes('ui-avatars')) return;
+                const key = src.split('?')[0].substring(0, 200);
+                if (seen.has(key)) return;
+                seen.add(key);
+                images.push({
+                  index: images.length,
+                  src,
+                  alt: img.alt || '',
+                  width: img.naturalWidth || img.width,
+                  height: img.naturalHeight || img.height,
+                  messageIndex: msgIdx,
+                  isBlob: src.startsWith('blob:'),
+                  isData: src.startsWith('data:'),
+                  isDalle: true
+                });
+              });
+
+              // Also check for <a> links to DALL-E images (download links)
+              msg.querySelectorAll('a[href*="oaiusercontent.com"], a[href*="openai"]').forEach(a => {
+                const href = a.href;
+                if (seen.has(href)) return;
+                seen.add(href);
+                images.push({
+                  index: images.length,
+                  src: href,
+                  alt: a.textContent?.trim() || '',
+                  width: 0, height: 0,
+                  messageIndex: msgIdx,
+                  isLink: true,
+                  isDalle: true
+                });
+              });
+            });
+
+            return { count: images.length, images };
+          }
+        });
+        result = result[0]?.result || { count: 0, images: [] };
+        break;
+      }
+
+      case 'chatgpt_download_images': {
+        // Download DALL-E images from ChatGPT
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+
+        // First get images via content script
+        const cgptImgResults = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const sources = [];
+            const seen = new Set();
+            function addSrc(src, w, h) {
+              if (!src) return;
+              if (src.includes('data:image/svg') || src.includes('/favicon') ||
+                  src.includes('avatar') || src.includes('ui-avatars') ||
+                  src.endsWith('.svg') || src.includes('.svg?')) return;
+              const key = src.split('?')[0].substring(0, 200);
+              if (seen.has(key)) return;
+              seen.add(key);
+              sources.push({ src, width: w, height: h });
+            }
+
+            const assistantMsgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            assistantMsgs.forEach(msg => {
+              msg.querySelectorAll('img').forEach(img => {
+                if (img.naturalWidth > 50 || img.width > 50) {
+                  addSrc(img.src, img.naturalWidth || img.width, img.naturalHeight || img.height);
+                }
+              });
+            });
+
+            return { sources, count: sources.length };
+          }
+        });
+
+        let cgptImgData = cgptImgResults[0]?.result;
+        if (!cgptImgData || cgptImgData.count === 0) {
+          result = { error: 'No DALL-E images found in ChatGPT responses' };
+          break;
+        }
+
+        // Download each image
+        const cgptDownloads = [];
+        const cgptTimestamp = Date.now();
+        for (let i = 0; i < cgptImgData.sources.length; i++) {
+          const item = cgptImgData.sources[i];
+          const filename = command.prefix
+            ? `${command.prefix}_${i + 1}.png`
+            : `chatgpt_${cgptTimestamp}_${i + 1}.png`;
+
+          try {
+            if (item.src.startsWith('data:')) {
+              const did = await chrome.downloads.download({ url: item.src, filename });
+              cgptDownloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'data_url' });
+              continue;
+            }
+
+            // Fetch with cookies
+            let cookieHeader = '';
+            try {
+              const cookies = await chrome.cookies.getAll({ domain: '.chatgpt.com' });
+              cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            } catch (e) {}
+
+            const fetchOpts = {};
+            if (cookieHeader) fetchOpts.headers = { 'Cookie': cookieHeader };
+
+            const resp = await fetch(item.src, fetchOpts);
+            const ct = resp.headers.get('content-type') || '';
+
+            if (ct.startsWith('image/')) {
+              const arrayBuf = await resp.arrayBuffer();
+              if (arrayBuf.byteLength < 5120) {
+                console.log(`[chatgpt_download] Skipping tiny image (${arrayBuf.byteLength}B)`);
+                continue;
+              }
+              const bytes = new Uint8Array(arrayBuf);
+              let binary = '';
+              for (let b = 0; b < bytes.length; b++) binary += String.fromCharCode(bytes[b]);
+              const base64 = btoa(binary);
+              const dataUrl = `data:image/png;base64,${base64}`;
+              const did = await chrome.downloads.download({ url: dataUrl, filename });
+              cgptDownloads.push({ downloadId: did, filename, width: item.width, height: item.height, size: arrayBuf.byteLength, method: 'cookie_fetch' });
+            } else {
+              const did = await chrome.downloads.download({ url: item.src, filename });
+              cgptDownloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'direct_url' });
+            }
+          } catch (e) {
+            cgptDownloads.push({ error: e.message, filename, src: item.src.substring(0, 100) });
+          }
+        }
+
+        result = { downloads: cgptDownloads, totalImages: cgptImgData.count, downloaded: cgptDownloads.filter(d => d.downloadId).length };
+        break;
+      }
+
+      case 'chatgpt_delete_chat': {
+        // Delete current ChatGPT conversation
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async () => {
+            try {
+              // ChatGPT sidebar: conversation items with a menu button
+              const currentPath = window.location.pathname;
+              const convId = currentPath.split('/c/')[1] || currentPath.split('/g/')[1];
+
+              // Find the current conversation link in sidebar
+              let convLink = null;
+              if (convId) {
+                convLink = document.querySelector(`a[href*="${convId}"]`);
+              }
+              if (!convLink) {
+                // Try first conversation in sidebar (most recent)
+                convLink = document.querySelector('nav a[href*="/c/"], nav a[href*="/g/"]');
+              }
+              if (!convLink) {
+                return { error: 'No conversation found in sidebar' };
+              }
+
+              // Hover to reveal menu button
+              convLink.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+              await new Promise(r => setTimeout(r, 300));
+
+              // Find the menu button (3-dot)
+              const container = convLink.closest('li') || convLink.parentElement;
+              let menuBtn = container?.querySelector('button[aria-label*="Options"], button[data-testid*="options"]');
+              if (!menuBtn) {
+                const btns = container?.querySelectorAll('button') || [];
+                for (const b of btns) {
+                  if (b.querySelector('svg') && !b.textContent?.trim()) {
+                    menuBtn = b;
+                    break;
+                  }
+                }
+              }
+              if (!menuBtn) {
+                return { error: 'Menu button not found on ChatGPT conversation' };
+              }
+
+              menuBtn.click();
+              await new Promise(r => setTimeout(r, 400));
+
+              // Find Delete in dropdown
+              const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"], button');
+              let deleteClicked = false;
+              for (const item of menuItems) {
+                const text = item.textContent?.trim().toLowerCase();
+                if (text?.includes('delete') || text?.includes('ลบ')) {
+                  item.click();
+                  deleteClicked = true;
+                  break;
+                }
+              }
+
+              if (!deleteClicked) {
+                document.body.click();
+                return { error: 'Delete option not found in ChatGPT menu' };
+              }
+
+              // Confirm
+              await new Promise(r => setTimeout(r, 500));
+              const dialogs = document.querySelectorAll('[role="dialog"], [class*="modal"]');
+              for (const dialog of dialogs) {
+                const btns = dialog.querySelectorAll('button');
+                for (const btn of btns) {
+                  const text = btn.textContent?.trim().toLowerCase();
+                  if (text === 'delete' || text === 'confirm') {
+                    btn.click();
+                    return { success: true, method: 'chatgpt_delete' };
+                  }
+                }
+              }
+
+              return { success: true, method: 'chatgpt_delete_direct' };
+            } catch (e) {
+              return { error: e.message };
+            }
+          }
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
@@ -1735,7 +2093,7 @@ let lastPublishedUrl = '';
 async function publishCurrentPage() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.url && tab.url.includes('gemini.google.com') && tab.url !== lastPublishedUrl) {
+    if (tab && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com') || tab.url.includes('chat.openai.com')) && tab.url !== lastPublishedUrl) {
       lastPublishedUrl = tab.url;
       const pageInfo = {
         url: tab.url,
@@ -1754,11 +2112,11 @@ async function publishCurrentPage() {
 async function updateSidebarState() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const onGemini = tab?.url?.includes('gemini.google.com');
+    const onAiSite2 = tab?.url?.includes('gemini.google.com') || tab?.url?.includes('chatgpt.com') || tab?.url?.includes('chat.openai.com');
     await chrome.sidePanel.setOptions({
       tabId: tab.id,
       path: 'sidepanel.html',
-      enabled: onGemini
+      enabled: onAiSite2
     });
   } catch (e) {}
 }
