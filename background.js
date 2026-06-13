@@ -1026,9 +1026,7 @@ Use double newlines between timestamps!`;
               const base64 = btoa(binary);
               // Use image/png mime to help Chrome with filename
               const dataUrl = `data:image/png;base64,${base64}`;
-              const did = await chrome.downloads.download({ url: dataUrl });
-              // Register filename override via onDeterminingFilename listener
-              pendingFilenames.set(did, filename);
+              const did = await chrome.downloads.download({ url: dataUrl, filename });
               downloads.push({ downloadId: did, filename, width: item.width, height: item.height, size: arrayBuf.byteLength, method: 'cookie_fetch' });
             } else {
               // Not an image — try direct download as last resort
