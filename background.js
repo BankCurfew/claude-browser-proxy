@@ -1299,6 +1299,220 @@ Use double newlines between timestamps!`;
         result = result[0]?.result || { error: 'Script returned null' };
         break;
 
+      case 'delete_chat': {
+        // Delete current conversation from Gemini sidebar
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async () => {
+            try {
+              // Find the active/selected conversation in sidebar
+              // Gemini marks the current chat with aria-selected or a highlighted class
+              const sidebar = document.querySelector('nav, [role="navigation"], .conversation-list, [class*="sidebar"]');
+
+              // Strategy 1: Click the 3-dot menu on the current conversation
+              // The current conversation is usually the one with a selected/active state
+              const allConvItems = document.querySelectorAll('a[href*="/app/"], [data-conversation-id]');
+              let currentConv = null;
+              const currentPath = window.location.pathname;
+
+              for (const item of allConvItems) {
+                const href = item.getAttribute('href') || '';
+                if (href && currentPath.includes(href.split('/app/')[1] || '___none___')) {
+                  currentConv = item;
+                  break;
+                }
+              }
+
+              // Strategy 2: find by aria-current or active class
+              if (!currentConv) {
+                currentConv = document.querySelector('[aria-current="page"]') ||
+                  document.querySelector('.selected, .active, [data-active="true"]');
+              }
+
+              if (!currentConv) {
+                // Strategy 3: hover over conversation items to reveal menu
+                // Try the first conversation in the sidebar (most recent)
+                const firstConv = allConvItems[0];
+                if (firstConv) currentConv = firstConv;
+              }
+
+              if (!currentConv) {
+                return { error: 'No conversation found to delete' };
+              }
+
+              // Hover to reveal the 3-dot menu button
+              currentConv.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+              await new Promise(r => setTimeout(r, 300));
+
+              // Find the 3-dot menu button (usually a button with ⋮ or mat-icon)
+              const container = currentConv.closest('li, [class*="conversation"], [class*="chat-item"]') || currentConv;
+              let menuBtn = container.querySelector('button[aria-label*="more"], button[aria-label*="More"], button[aria-label*="options"], button[aria-label*="Options"], button[aria-label*="menu"]');
+
+              if (!menuBtn) {
+                // Try finding any button with 3-dot icon (⋮ or three_dots mat-icon)
+                const btns = container.querySelectorAll('button');
+                for (const b of btns) {
+                  const text = b.textContent?.trim();
+                  if (text === '⋮' || text === 'more_vert' || text === 'more_horiz' || b.querySelector('[class*="more"]')) {
+                    menuBtn = b;
+                    break;
+                  }
+                }
+              }
+
+              if (!menuBtn) {
+                return { error: 'Menu button not found on conversation item' };
+              }
+
+              menuBtn.click();
+              await new Promise(r => setTimeout(r, 400));
+
+              // Find and click "Delete" in the dropdown menu
+              const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"], mat-menu-item, button');
+              let deleteClicked = false;
+              for (const item of menuItems) {
+                const text = item.textContent?.trim().toLowerCase();
+                if (text?.includes('delete') || text?.includes('ลบ')) {
+                  item.click();
+                  deleteClicked = true;
+                  break;
+                }
+              }
+
+              if (!deleteClicked) {
+                return { error: 'Delete option not found in menu' };
+              }
+
+              // Wait for confirmation dialog and click confirm
+              await new Promise(r => setTimeout(r, 500));
+              const confirmBtns = document.querySelectorAll('button, [role="button"]');
+              for (const btn of confirmBtns) {
+                const text = btn.textContent?.trim().toLowerCase();
+                if (text === 'delete' || text === 'confirm' || text === 'ลบ' || text === 'ok') {
+                  // Make sure this is in a dialog/overlay, not the main page
+                  const dialog = btn.closest('[role="dialog"], [class*="dialog"], [class*="modal"], mat-dialog-container, [class*="overlay"]');
+                  if (dialog) {
+                    btn.click();
+                    return { success: true, method: 'menu_delete_confirm' };
+                  }
+                }
+              }
+
+              // If no dialog confirmation needed, deletion may have happened directly
+              return { success: true, method: 'menu_delete_direct' };
+            } catch (e) {
+              return { error: e.message };
+            }
+          }
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
+      case 'delete_chats_bulk': {
+        // Delete multiple old conversations from Gemini sidebar
+        // command.count = number of chats to delete (default: all)
+        // command.keepRecent = number of recent chats to keep (default: 1)
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+
+        const keepRecent = command.keepRecent ?? 1;
+        const maxDelete = command.count ?? 50;
+
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (keepRecent, maxDelete) => {
+            try {
+              let deleted = 0;
+              let errors = [];
+
+              for (let round = 0; round < maxDelete; round++) {
+                // Re-query each round since DOM changes after deletion
+                const convItems = document.querySelectorAll('a[href*="/app/"]');
+                const deletable = Array.from(convItems).slice(keepRecent); // skip N most recent
+
+                if (deletable.length === 0) break;
+
+                const target = deletable[0];
+
+                // Hover to reveal menu
+                target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 300));
+
+                const container = target.closest('li, [class*="conversation"], [class*="chat-item"]') || target;
+                let menuBtn = container.querySelector('button[aria-label*="more"], button[aria-label*="More"], button[aria-label*="options"], button[aria-label*="Options"], button[aria-label*="menu"]');
+
+                if (!menuBtn) {
+                  const btns = container.querySelectorAll('button');
+                  for (const b of btns) {
+                    const text = b.textContent?.trim();
+                    if (text === '⋮' || text === 'more_vert' || text === 'more_horiz' || b.querySelector('[class*="more"]')) {
+                      menuBtn = b;
+                      break;
+                    }
+                  }
+                }
+
+                if (!menuBtn) {
+                  errors.push(`Round ${round}: menu button not found`);
+                  break;
+                }
+
+                menuBtn.click();
+                await new Promise(r => setTimeout(r, 400));
+
+                const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"], mat-menu-item, button');
+                let deleteClicked = false;
+                for (const item of menuItems) {
+                  const text = item.textContent?.trim().toLowerCase();
+                  if (text?.includes('delete') || text?.includes('ลบ')) {
+                    item.click();
+                    deleteClicked = true;
+                    break;
+                  }
+                }
+
+                if (!deleteClicked) {
+                  errors.push(`Round ${round}: delete option not found`);
+                  break;
+                }
+
+                // Confirm deletion
+                await new Promise(r => setTimeout(r, 500));
+                const confirmBtns = document.querySelectorAll('button, [role="button"]');
+                for (const btn of confirmBtns) {
+                  const text = btn.textContent?.trim().toLowerCase();
+                  if (text === 'delete' || text === 'confirm' || text === 'ลบ' || text === 'ok') {
+                    const dialog = btn.closest('[role="dialog"], [class*="dialog"], [class*="modal"], mat-dialog-container, [class*="overlay"]');
+                    if (dialog) {
+                      btn.click();
+                      break;
+                    }
+                  }
+                }
+
+                deleted++;
+                // Wait for DOM to update after deletion
+                await new Promise(r => setTimeout(r, 800));
+              }
+
+              return { success: true, deleted, errors: errors.length ? errors : undefined };
+            } catch (e) {
+              return { error: e.message };
+            }
+          },
+          args: [keepRecent, maxDelete]
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
