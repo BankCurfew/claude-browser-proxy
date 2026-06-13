@@ -1690,8 +1690,10 @@ Use double newlines between timestamps!`;
                 if (!src || src.includes('data:image/svg') || src.includes('/favicon') ||
                     src.includes('avatar') || src.includes('ui-avatars') ||
                     src.endsWith('.svg') || src.includes('.svg?')) return;
-                // Skip tiny images (icons, spinners)
-                if ((img.naturalWidth || img.width) < 50 && (img.naturalHeight || img.height) < 50) return;
+                // Skip small images (icons, spinners, uploaded references) — DALL-E outputs are 1024+
+                const imgW = img.naturalWidth || img.width;
+                const imgH = img.naturalHeight || img.height;
+                if (imgW < 512 || imgH < 512) return;
                 const key = src.split('#')[0].substring(0, 200);
                 if (seen.has(key)) return;
                 seen.add(key);
@@ -1759,8 +1761,11 @@ Use double newlines between timestamps!`;
             const containers = document.querySelectorAll('.agent-turn, [data-testid^="conversation-turn-"]');
             containers.forEach(container => {
               container.querySelectorAll('img').forEach(img => {
-                if (img.naturalWidth > 50 || img.width > 50) {
-                  addSrc(img.src, img.naturalWidth || img.width, img.naturalHeight || img.height);
+                const w = img.naturalWidth || img.width;
+                const h = img.naturalHeight || img.height;
+                /* Filter out small images (uploaded references, icons) — DALL-E outputs are 1024+ */
+                if (w >= 512 && h >= 512) {
+                  addSrc(img.src, w, h);
                 }
               });
             });
