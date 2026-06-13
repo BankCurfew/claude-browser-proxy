@@ -992,6 +992,16 @@ Use double newlines between timestamps!`;
         const timestamp = Date.now();
         for (let i = 0; i < imgData.sources.length; i++) {
           const item = imgData.sources[i];
+
+          // Belt-and-suspenders: filter junk URLs that slipped past collection phase
+          const srcLower = (item.src || '').toLowerCase();
+          if (srcLower.includes('gstatic.com/') || srcLower.includes('sparkle') ||
+              srcLower.includes('lamda/images') || srcLower.endsWith('.svg') ||
+              srcLower.includes('.svg?') || srcLower.startsWith('data:image/svg')) {
+            console.log(`[download_images] Skipping junk URL at download phase: ${item.src.substring(0, 80)}`);
+            continue;
+          }
+
           const filename = command.prefix
             ? `${command.prefix}_${i + 1}.png`
             : `gemini_${timestamp}_${i + 1}.png`;
@@ -1011,6 +1021,12 @@ Use double newlines between timestamps!`;
             }
             const resp = await fetch(item.src, fetchOpts);
             const ct = resp.headers.get('content-type') || '';
+
+            // Skip SVG responses — never download SVG icons
+            if (ct.includes('svg')) {
+              console.log(`[download_images] Skipping SVG content-type: ${item.src.substring(0, 80)}`);
+              continue;
+            }
 
             if (ct.startsWith('image/')) {
               // Got actual image — convert to base64 data URL and download
