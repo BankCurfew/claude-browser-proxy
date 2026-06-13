@@ -1645,10 +1645,21 @@ Use double newlines between timestamps!`;
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
-            const isLoading = !!document.querySelector('.result-streaming, [class*="streaming"], button[aria-label="Stop generating"]');
+            // ChatGPT uses conversation-turn-N sections — odd=user, even=assistant
+            const turns = document.querySelectorAll('[data-testid^="conversation-turn-"]');
+            // Count assistant turns (even numbers: turn-2, turn-4, etc.)
+            let assistantCount = 0;
+            turns.forEach(t => {
+              const id = t.getAttribute('data-testid') || '';
+              const num = parseInt(id.replace('conversation-turn-', ''));
+              if (num % 2 === 0) assistantCount++;
+            });
+            // Also check for .agent-turn (assistant response container)
+            const agentTurns = document.querySelectorAll('.agent-turn');
+            const count = Math.max(assistantCount, agentTurns.length);
+            const isLoading = !!document.querySelector('.result-streaming, [class*="streaming"], button[aria-label="Stop generating"], button[aria-label="Stop"]');
             return {
-              responseCount: responses.length,
+              responseCount: count,
               loading: isLoading,
               url: window.location.href
             };
@@ -1670,14 +1681,18 @@ Use double newlines between timestamps!`;
             const images = [];
             const seen = new Set();
 
-            // DALL-E images appear as <img> inside assistant messages
-            const assistantMsgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-            assistantMsgs.forEach((msg, msgIdx) => {
-              msg.querySelectorAll('img').forEach(img => {
+            // DALL-E images: served from chatgpt.com/backend-api/estuary/content
+            // or oaiusercontent.com — found inside .agent-turn or conversation-turn sections
+            const containers = document.querySelectorAll('.agent-turn, [data-testid^="conversation-turn-"]');
+            containers.forEach((container, msgIdx) => {
+              container.querySelectorAll('img').forEach(img => {
                 const src = img.src || '';
                 if (!src || src.includes('data:image/svg') || src.includes('/favicon') ||
-                    src.includes('avatar') || src.includes('ui-avatars')) return;
-                const key = src.split('?')[0].substring(0, 200);
+                    src.includes('avatar') || src.includes('ui-avatars') ||
+                    src.endsWith('.svg') || src.includes('.svg?')) return;
+                // Skip tiny images (icons, spinners)
+                if ((img.naturalWidth || img.width) < 50 && (img.naturalHeight || img.height) < 50) return;
+                const key = src.split('#')[0].substring(0, 200);
                 if (seen.has(key)) return;
                 seen.add(key);
                 images.push({
@@ -1689,12 +1704,12 @@ Use double newlines between timestamps!`;
                   messageIndex: msgIdx,
                   isBlob: src.startsWith('blob:'),
                   isData: src.startsWith('data:'),
-                  isDalle: true
+                  isDalle: src.includes('estuary/content') || src.includes('oaiusercontent')
                 });
               });
 
               // Also check for <a> links to DALL-E images (download links)
-              msg.querySelectorAll('a[href*="oaiusercontent.com"], a[href*="openai"]').forEach(a => {
+              container.querySelectorAll('a[href*="oaiusercontent.com"], a[href*="estuary/content"]').forEach(a => {
                 const href = a.href;
                 if (seen.has(href)) return;
                 seen.add(href);
@@ -1741,9 +1756,9 @@ Use double newlines between timestamps!`;
               sources.push({ src, width: w, height: h });
             }
 
-            const assistantMsgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-            assistantMsgs.forEach(msg => {
-              msg.querySelectorAll('img').forEach(img => {
+            const containers = document.querySelectorAll('.agent-turn, [data-testid^="conversation-turn-"]');
+            containers.forEach(container => {
+              container.querySelectorAll('img').forEach(img => {
                 if (img.naturalWidth > 50 || img.width > 50) {
                   addSrc(img.src, img.naturalWidth || img.width, img.naturalHeight || img.height);
                 }
