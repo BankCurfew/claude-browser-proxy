@@ -1921,6 +1921,165 @@ Use double newlines between timestamps!`;
         break;
       }
 
+      case 'gemini_upload': {
+        // Upload image/file to Gemini chat input
+        // command.data = base64-encoded file content
+        // command.filename = filename
+        // command.mimeType = MIME type (default: "image/png")
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+        if (!command.data) {
+          result = { error: 'data (base64) parameter required' };
+          break;
+        }
+        const gemUploadFilename = command.filename || 'upload.png';
+        const gemUploadMime = command.mimeType || 'image/png';
+
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (base64Data, filename, mimeType) => {
+            try {
+              // Convert base64 to File
+              const binary = atob(base64Data);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: mimeType });
+              const file = new File([blob], filename, { type: mimeType, lastModified: Date.now() });
+
+              // Click "Upload & tools" button to reveal upload menu
+              const uploadBtn = document.querySelector('button[aria-label="Upload & tools"]') ||
+                document.querySelector('button[aria-label*="Upload"]');
+              if (!uploadBtn) {
+                return { error: 'Upload & tools button not found' };
+              }
+              uploadBtn.click();
+              await new Promise(r => setTimeout(r, 500));
+
+              // Look for file input that appeared after clicking upload button
+              let fileInput = document.querySelector('input[type="file"]');
+
+              if (!fileInput) {
+                // Click "Upload file" menu item if a menu appeared
+                const menuItems = document.querySelectorAll('[role="menuitem"], button, [role="option"]');
+                for (const item of menuItems) {
+                  const text = item.textContent?.trim().toLowerCase();
+                  if (text?.includes('upload') || text?.includes('file') || text?.includes('อัปโหลด')) {
+                    item.click();
+                    await new Promise(r => setTimeout(r, 500));
+                    break;
+                  }
+                }
+                fileInput = document.querySelector('input[type="file"]');
+              }
+
+              if (!fileInput) {
+                // Fallback: try drag-and-drop onto the input area
+                const inputArea = document.querySelector('rich-textarea, [contenteditable="true"]');
+                if (inputArea) {
+                  const dt = new DataTransfer();
+                  dt.items.add(file);
+                  const dropEvent = new DragEvent('drop', {
+                    bubbles: true, cancelable: true, dataTransfer: dt
+                  });
+                  inputArea.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer: dt }));
+                  inputArea.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+                  inputArea.dispatchEvent(dropEvent);
+                  return { success: true, filename, size: bytes.length, method: 'drop' };
+                }
+                return { error: 'No file input found after clicking Upload & tools' };
+              }
+
+              // Set file via DataTransfer
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              fileInput.files = dt.files;
+              fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+              return { success: true, filename, size: bytes.length, mimeType, method: 'fileInput' };
+            } catch (e) {
+              return { error: e.message };
+            }
+          },
+          args: [command.data, gemUploadFilename, gemUploadMime]
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
+      case 'chatgpt_upload': {
+        // Upload image/file to ChatGPT chat input
+        // command.data = base64-encoded file content
+        // command.filename = filename (e.g., "logo.png")
+        // command.mimeType = MIME type (default: "image/png")
+        if (!tab.url?.includes('chatgpt.com') && !tab.url?.includes('chat.openai.com')) {
+          result = { error: 'Not on ChatGPT page' };
+          break;
+        }
+        if (!command.data) {
+          result = { error: 'data (base64) parameter required' };
+          break;
+        }
+        const uploadFilename = command.filename || 'upload.png';
+        const uploadMime = command.mimeType || 'image/png';
+
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (base64Data, filename, mimeType) => {
+            try {
+              // Convert base64 to binary
+              const binary = atob(base64Data);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: mimeType });
+              const file = new File([blob], filename, { type: mimeType, lastModified: Date.now() });
+
+              // Find the image upload input (#upload-photos accepts image/*)
+              let input = document.getElementById('upload-photos') ||
+                document.getElementById('upload-files') ||
+                document.querySelector('input[type="file"][accept*="image"]') ||
+                document.querySelector('input[type="file"]');
+
+              if (!input) {
+                return { error: 'File input not found in ChatGPT UI' };
+              }
+
+              // Use DataTransfer to set files on the input
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              input.files = dt.files;
+
+              // Trigger change event — ChatGPT's React/Next.js listens for this
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+
+              // Also try input event for React synthetic events
+              const inputEvent = new Event('input', { bubbles: true });
+              Object.defineProperty(inputEvent, 'target', { value: input });
+              input.dispatchEvent(inputEvent);
+
+              return {
+                success: true,
+                filename,
+                size: bytes.length,
+                mimeType,
+                inputId: input.id,
+                method: 'dataTransfer'
+              };
+            } catch (e) {
+              return { error: e.message };
+            }
+          },
+          args: [command.data, uploadFilename, uploadMime]
+        });
+        result = result[0]?.result || { error: 'Script returned null' };
+        break;
+      }
+
       default:
         result = { error: 'Unknown action: ' + command.action };
     }
