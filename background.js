@@ -1785,11 +1785,26 @@ Use double newlines between timestamps!`;
           break;
         }
 
-        // Download each image
+        // Filter images by index/latest (#8 follow-up: was always downloading all)
+        let toDownload = cgptImgData.sources;
+        if (command.latest) {
+          // Download only the most recent (last) image
+          toDownload = [cgptImgData.sources[cgptImgData.sources.length - 1]];
+        } else if (command.imageIndex !== undefined && command.imageIndex !== null) {
+          const idx = Number(command.imageIndex);
+          if (idx >= 0 && idx < cgptImgData.sources.length) {
+            toDownload = [cgptImgData.sources[idx]];
+          } else {
+            result = { error: `imageIndex ${idx} out of range (0-${cgptImgData.sources.length - 1})`, count: cgptImgData.count };
+            break;
+          }
+        }
+
+        // Download selected image(s)
         const cgptDownloads = [];
         const cgptTimestamp = Date.now();
-        for (let i = 0; i < cgptImgData.sources.length; i++) {
-          const item = cgptImgData.sources[i];
+        for (let i = 0; i < toDownload.length; i++) {
+          const item = toDownload[i];
           const filename = command.prefix
             ? `${command.prefix}_${i + 1}.png`
             : `chatgpt_${cgptTimestamp}_${i + 1}.png`;
