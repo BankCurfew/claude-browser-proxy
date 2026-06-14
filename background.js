@@ -1758,7 +1758,7 @@ Use double newlines between timestamps!`;
               if (src.includes('data:image/svg') || src.includes('/favicon') ||
                   src.includes('avatar') || src.includes('ui-avatars') ||
                   src.endsWith('.svg') || src.includes('.svg?')) return;
-              const key = src.split('?')[0].substring(0, 200);
+              const key = src.split('#')[0].substring(0, 200);
               if (seen.has(key)) return;
               seen.add(key);
               sources.push({ src, width: w, height: h });
