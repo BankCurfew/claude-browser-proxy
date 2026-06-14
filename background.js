@@ -1692,6 +1692,7 @@ Use double newlines between timestamps!`;
               const src = img.src || '';
               if (!src || src.includes('data:image/svg') || src.includes('/favicon') ||
                   src.includes('avatar') || src.includes('ui-avatars') ||
+                  src.includes('chrome-extension://') ||
                   src.endsWith('.svg') || src.includes('.svg?')) return;
               const imgW = img.naturalWidth || img.width;
               const imgH = img.naturalHeight || img.height;
@@ -1757,6 +1758,7 @@ Use double newlines between timestamps!`;
               if (!src) return;
               if (src.includes('data:image/svg') || src.includes('/favicon') ||
                   src.includes('avatar') || src.includes('ui-avatars') ||
+                  src.includes('chrome-extension://') ||
                   src.endsWith('.svg') || src.includes('.svg?')) return;
               const key = src.split('#')[0].substring(0, 200);
               if (seen.has(key)) return;
