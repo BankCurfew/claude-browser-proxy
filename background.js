@@ -1851,7 +1851,19 @@ Use double newlines between timestamps!`;
           }
         }
 
-        result = { downloads: cgptDownloads, totalImages: cgptImgData.count, downloaded: cgptDownloads.filter(d => d.downloadId).length };
+        result = {
+          downloads: cgptDownloads,
+          totalImages: cgptImgData.count,
+          downloaded: cgptDownloads.filter(d => d.downloadId).length,
+          // Debug: show what was selected (#10 diagnosis)
+          _debug: {
+            sourcesFound: cgptImgData.sources.length,
+            selectedCount: toDownload.length,
+            selectedSrcs: toDownload.map((s, i) => ({ i, src: s.src.substring(0, 120), w: s.width, h: s.height })),
+            allSrcs: cgptImgData.sources.map((s, i) => ({ i, src: s.src.substring(0, 120), w: s.width, h: s.height })),
+            params: { latest: command.latest, imageIndex: command.imageIndex }
+          }
+        };
         break;
       }
 
