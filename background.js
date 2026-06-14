@@ -1677,6 +1677,7 @@ Use double newlines between timestamps!`;
         }
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN', // Must match shadow-fix.js world to see forced-open shadow roots
           func: () => {
             const images = [];
             const seen = new Set();
@@ -1746,6 +1747,7 @@ Use double newlines between timestamps!`;
         // DOM-resilient scan (#8): no container selectors, detect DALL-E by URL/alt patterns
         const cgptImgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN', // Must match shadow-fix.js world to see forced-open shadow roots
           func: () => {
             const sources = [];
             const seen = new Set();
