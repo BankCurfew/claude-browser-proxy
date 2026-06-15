@@ -1611,14 +1611,33 @@ Use double newlines between timestamps!`;
 
               await new Promise(r => setTimeout(r, 300));
 
-              // Click send button
-              const sendBtn = document.querySelector('button[data-testid="send-button"]') ||
-                document.querySelector('button[aria-label="Send prompt"]') ||
-                document.querySelector('form button[type="submit"]');
+              // Click send button — try multiple selectors (ChatGPT DOM changes frequently)
+              const sendSelectors = [
+                '#composer-submit-button',
+                'button[data-testid="send-button"]',
+                'button[aria-label="Send prompt"]',
+                'button[aria-label*="Send"]',
+                'form button[type="submit"]',
+              ];
+              let sendBtn = null;
+              for (const sel of sendSelectors) {
+                sendBtn = document.querySelector(sel);
+                if (sendBtn) break;
+              }
 
               if (sendBtn && !sendBtn.disabled) {
                 sendBtn.click();
                 return { success: true, sent: text.substring(0, 50), method: 'button' };
+              }
+
+              // Retry after short wait — button may enable after file processing
+              await new Promise(r => setTimeout(r, 500));
+              for (const sel of sendSelectors) {
+                sendBtn = document.querySelector(sel);
+                if (sendBtn && !sendBtn.disabled) {
+                  sendBtn.click();
+                  return { success: true, sent: text.substring(0, 50), method: 'button_retry' };
+                }
               }
 
               // Fallback: Enter key
