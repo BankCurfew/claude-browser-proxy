@@ -4,7 +4,7 @@
 importScripts('mqtt.min.js');
 
 const VERSION = '3.0.0'; // Short version for badge display
-const MQTT_URL = 'ws://172.20.28.47:9001';
+const MQTT_URL = 'ws://localhost:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
 const pendingFilenames = new Map();
@@ -1016,6 +1016,34 @@ Use double newlines between timestamps!`;
             if (item.src.startsWith('data:')) {
               const did = await chrome.downloads.download({ url: item.src, filename });
               downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'data_url' });
+              continue;
+            }
+
+            // T032: blob URLs — fetch in page context, convert to dataURL
+            if (item.src.startsWith('blob:')) {
+              try {
+                const [result] = await chrome.scripting.executeScript({
+                  target: { tabId: command.tabId },
+                  func: async (blobUrl) => {
+                    const resp = await fetch(blobUrl);
+                    const blob = await resp.blob();
+                    return await new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => resolve(reader.result);
+                      reader.readAsDataURL(blob);
+                    });
+                  },
+                  args: [item.src],
+                });
+                if (result?.result && typeof result.result === 'string' && result.result.startsWith('data:')) {
+                  const did = await chrome.downloads.download({ url: result.result, filename });
+                  downloads.push({ downloadId: did, filename, width: item.width, height: item.height, method: 'blob_to_data' });
+                } else {
+                  console.log(`[download_images] blob conversion returned non-data result for: ${item.src.substring(0, 60)}`);
+                }
+              } catch (blobErr) {
+                console.log(`[download_images] blob fetch failed: ${blobErr.message} — ${item.src.substring(0, 60)}`);
+              }
               continue;
             }
 
