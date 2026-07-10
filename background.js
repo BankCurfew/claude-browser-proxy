@@ -267,6 +267,14 @@ Use double newlines between timestamps!`;
         publish(TOPICS.response, { ...result, id: command.id, action: command.action });
         return;
 
+      case 'close_tab': {
+        if (!command.tabId) throw new Error('tabId required for close_tab');
+        await chrome.tabs.remove(command.tabId);
+        result = { success: true, tabId: command.tabId, closed: true };
+        publish(TOPICS.response, { ...result, id: command.id, action: command.action });
+        return;
+      }
+
       case 'inject_badge':
         // DEBUG: Inject badge into specific tab
         if (!command.tabId) throw new Error('tabId required');
