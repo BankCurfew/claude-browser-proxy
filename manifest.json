@@ -11,7 +11,8 @@
     "storage",
     "tabs",
     "cookies",
-    "debugger"
+    "debugger",
+    "alarms"
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
@@ -41,6 +42,11 @@
       "js": ["shadow-fix.js"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": ["https://gemini.google.com/*", "https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["keepalive.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

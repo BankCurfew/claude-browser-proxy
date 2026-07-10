@@ -28,6 +28,23 @@ let client = null;
 let isConnected = false;
 let connectedAt = 0; // Track connection time to ignore stale retained messages
 
+// MV3 keepalive: prevent service worker idle termination during long DALL-E renders
+// Primary: content script port (keepalive.js) keeps worker alive while AI tabs are open
+// Backup: alarm reconnects MQTT if worker wakes after an unexpected kill
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'keepalive') return; // just holding the port open is enough
+});
+const KEEPALIVE_ALARM = 'mqtt-keepalive';
+chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) {
+    if (!isConnected) {
+      console.log('[keepalive] MQTT disconnected — reconnecting...');
+      connect();
+    }
+  }
+});
+
 // Connect to MQTT broker with LWT
 function connect() {
   console.log('[MQTT] Connecting to', MQTT_URL);
