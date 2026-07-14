@@ -1754,24 +1754,41 @@ Use double newlines between timestamps!`;
             const images = [];
             const seen = new Set();
 
-            // DALL-E images: served from chatgpt.com/backend-api/estuary/content
-            // or oaiusercontent.com
-            // Scan all imgs on the page — ChatGPT DOM structure changes frequently (#8)
-            const isDalleUrl = (s) => s.includes('estuary/content') || s.includes('oaiusercontent');
-            const isDalleAlt = (s) => s.startsWith('Generated image:');
+            // DALL-E images: URL patterns change frequently (#8, #15)
+            const dalleUrlPatterns = [
+              'estuary/content',
+              'oaiusercontent',
+              'oaidalleapiprodscus',
+              'dalleprodsec',
+              '/backend-api/files/',
+              '/backend-api/content/',
+              'openai-labs-public-images',
+            ];
+            const isDalleUrl = (s) => dalleUrlPatterns.some(p => s.includes(p));
+            const isDalleAlt = (s) => /^(Generated image|DALL|Image \d|A .{5,})/i.test(s);
+            const isUiJunk = (s) => s.includes('data:image/svg') || s.includes('/favicon') ||
+                s.includes('avatar') || s.includes('ui-avatars') ||
+                s.includes('chrome-extension://') || s.includes('/icons/') ||
+                s.endsWith('.svg') || s.includes('.svg?');
 
-            document.querySelectorAll('img').forEach(img => {
-              const src = img.src || '';
-              if (!src || src.includes('data:image/svg') || src.includes('/favicon') ||
-                  src.includes('avatar') || src.includes('ui-avatars') ||
-                  src.includes('chrome-extension://') ||
-                  src.endsWith('.svg') || src.includes('.svg?')) return;
+            // Scan all imgs — including inside opened shadow roots
+            const allImgs = [...document.querySelectorAll('img')];
+            document.querySelectorAll('*').forEach(el => {
+              if (el.shadowRoot) el.shadowRoot.querySelectorAll('img').forEach(img => allImgs.push(img));
+            });
+
+            const debug = [];
+            allImgs.forEach(img => {
+              const src = img.src || img.currentSrc || '';
+              if (!src) return;
+              if (isUiJunk(src)) return;
               const imgW = img.naturalWidth || img.width;
               const imgH = img.naturalHeight || img.height;
-              const dalle = isDalleUrl(src) || isDalleAlt(img.alt || '');
-              // DALL-E images render at various sizes in DOM (480×320 etc) — use low threshold
-              // For non-DALL-E imgs, require larger size to skip UI chrome
-              if (dalle ? (imgW < 100 || imgH < 100) : (imgW < 512 || imgH < 512)) return;
+              const dalle = isDalleUrl(src) || isDalleAlt(img.alt || '') || src.startsWith('blob:');
+              if (dalle ? (imgW < 50 || imgH < 50) : (imgW < 200 || imgH < 200)) {
+                if (dalle) debug.push({ src: src.substring(0, 120), w: imgW, h: imgH, skip: 'size', dalle: true });
+                return;
+              }
               const key = src.split('#')[0].substring(0, 200);
               if (seen.has(key)) return;
               seen.add(key);
@@ -1779,7 +1796,7 @@ Use double newlines between timestamps!`;
                 index: images.length,
                 src,
                 alt: img.alt || '',
-                width: img.naturalWidth || img.width,
+                width: imgW,
                 height: img.naturalHeight || img.height,
                 isBlob: src.startsWith('blob:'),
                 isData: src.startsWith('data:'),
@@ -1787,22 +1804,25 @@ Use double newlines between timestamps!`;
               });
             });
 
-            // Also check for <a> links to DALL-E images (download links)
-            document.querySelectorAll('a[href*="oaiusercontent.com"], a[href*="estuary/content"]').forEach(a => {
-              const href = a.href;
-              if (seen.has(href)) return;
-              seen.add(href);
-              images.push({
-                index: images.length,
-                src: href,
-                alt: a.textContent?.trim() || '',
-                width: 0, height: 0,
-                isLink: true,
-                isDalle: true
-              });
+            // Also check <picture> elements (srcset)
+            document.querySelectorAll('picture source').forEach(source => {
+              const srcset = source.srcset || '';
+              if (isDalleUrl(srcset) && !seen.has(srcset)) {
+                seen.add(srcset);
+                images.push({ index: images.length, src: srcset.split(' ')[0], alt: '', width: 0, height: 0, isDalle: true, isPicture: true });
+              }
             });
 
-            return { count: images.length, images };
+            // Also check for <a> links to DALL-E images (download links)
+            document.querySelectorAll('a').forEach(a => {
+              const href = a.href || '';
+              if (isDalleUrl(href) && !seen.has(href)) {
+                seen.add(href);
+                images.push({ index: images.length, src: href, alt: a.textContent?.trim() || '', width: 0, height: 0, isLink: true, isDalle: true });
+              }
+            });
+
+            return { count: images.length, images, debug: debug.length > 0 ? debug : undefined, totalScanned: allImgs.length };
           }
         });
         result = result[0]?.result || { count: 0, images: [] };
@@ -1817,36 +1837,41 @@ Use double newlines between timestamps!`;
         }
 
         // First get images via content script
-        // DOM-resilient scan (#8): no container selectors, detect DALL-E by URL/alt patterns
+        // DOM-resilient scan (#8, #15): broad URL patterns, shadow root scan
         const cgptImgResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          world: 'MAIN', // Must match shadow-fix.js world to see forced-open shadow roots
+          world: 'MAIN',
           func: () => {
             const sources = [];
             const seen = new Set();
-            const isDalleUrl = (s) => s.includes('estuary/content') || s.includes('oaiusercontent');
-            const isDalleAlt = (s) => s.startsWith('Generated image:');
-            function addSrc(src, w, h) {
-              if (!src) return;
-              if (src.includes('data:image/svg') || src.includes('/favicon') ||
-                  src.includes('avatar') || src.includes('ui-avatars') ||
-                  src.includes('chrome-extension://') ||
-                  src.endsWith('.svg') || src.includes('.svg?')) return;
-              const key = src.split('#')[0].substring(0, 200);
-              if (seen.has(key)) return;
-              seen.add(key);
-              sources.push({ src, width: w, height: h });
-            }
+            const dallePatterns = ['estuary/content', 'oaiusercontent', 'oaidalleapiprodscus', 'dalleprodsec', '/backend-api/files/', '/backend-api/content/', 'openai-labs-public-images'];
+            const isDalleUrl = (s) => dallePatterns.some(p => s.includes(p));
+            const isDalleAlt = (s) => /^(Generated image|DALL|Image \d|A .{5,})/i.test(s);
+            const isUiJunk = (s) => s.includes('data:image/svg') || s.includes('/favicon') ||
+                s.includes('avatar') || s.includes('ui-avatars') || s.includes('chrome-extension://') ||
+                s.includes('/icons/') || s.endsWith('.svg') || s.includes('.svg?');
 
-            document.querySelectorAll('img').forEach(img => {
+            const allImgs = [...document.querySelectorAll('img')];
+            document.querySelectorAll('*').forEach(el => {
+              if (el.shadowRoot) el.shadowRoot.querySelectorAll('img').forEach(img => allImgs.push(img));
+            });
+
+            allImgs.forEach(img => {
+              const src = img.src || img.currentSrc || '';
+              if (!src || isUiJunk(src)) return;
               const w = img.naturalWidth || img.width;
               const h = img.naturalHeight || img.height;
-              const src = img.src || '';
-              const dalle = isDalleUrl(src) || isDalleAlt(img.alt || '');
-              // DALL-E images render at various sizes in DOM — use low threshold for known DALL-E
-              if (dalle ? (w >= 100 && h >= 100) : (w >= 512 && h >= 512)) {
-                addSrc(src, w, h);
+              const dalle = isDalleUrl(src) || isDalleAlt(img.alt || '') || src.startsWith('blob:');
+              if (dalle ? (w >= 50 && h >= 50) : (w >= 200 && h >= 200)) {
+                const key = src.split('#')[0].substring(0, 200);
+                if (!seen.has(key)) { seen.add(key); sources.push({ src, width: w, height: h }); }
               }
+            });
+
+            // Check <a> links to DALL-E images
+            document.querySelectorAll('a').forEach(a => {
+              const href = a.href || '';
+              if (isDalleUrl(href) && !seen.has(href)) { seen.add(href); sources.push({ src: href, width: 0, height: 0 }); }
             });
 
             return { sources, count: sources.length };
