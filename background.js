@@ -1633,71 +1633,105 @@ Use double newlines between timestamps!`;
           target: { tabId: tab.id },
           func: async (text) => {
             try {
-              // ChatGPT uses a ProseMirror editor or contenteditable div
+              // ChatGPT uses ProseMirror — selectors differ between regular and project chats (#15)
               const selectors = [
                 '#prompt-textarea',
                 'div[contenteditable="true"][id="prompt-textarea"]',
+                'div[contenteditable="true"][data-placeholder]',
+                'div.ProseMirror[contenteditable="true"]',
                 'textarea[data-id="root"]',
                 '[contenteditable="true"]',
                 'textarea'
               ];
               let input = null;
+              let matchedSel = '';
               for (const sel of selectors) {
                 input = document.querySelector(sel);
-                if (input) break;
+                if (input) { matchedSel = sel; break; }
               }
-              if (!input) return { error: 'Input not found' };
+              if (!input) return { error: 'Input not found', url: location.href.substring(0, 80) };
 
               input.focus();
+              await new Promise(r => setTimeout(r, 100));
 
-              // ChatGPT uses ProseMirror — set innerHTML for <p> tags or use insertText
+              // Use execCommand('insertText') — works with ProseMirror in both regular and project chats
+              // innerHTML bypass doesn't register in project chat ProseMirror state (#15)
+              let inputMethod = 'unknown';
               if (input.tagName === 'TEXTAREA') {
-                // Legacy textarea
                 const nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
                 nativeSet.call(input, text);
                 input.dispatchEvent(new Event('input', { bubbles: true }));
+                inputMethod = 'textarea_native';
               } else {
-                // ProseMirror contenteditable div
-                input.innerHTML = `<p>${text}</p>`;
-                input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
-              }
-
-              await new Promise(r => setTimeout(r, 300));
-
-              // Click send button — try multiple selectors (ChatGPT DOM changes frequently)
-              const sendSelectors = [
-                '#composer-submit-button',
-                'button[data-testid="send-button"]',
-                'button[aria-label="Send prompt"]',
-                'button[aria-label*="Send"]',
-                'form button[type="submit"]',
-              ];
-              let sendBtn = null;
-              for (const sel of sendSelectors) {
-                sendBtn = document.querySelector(sel);
-                if (sendBtn) break;
-              }
-
-              if (sendBtn && !sendBtn.disabled) {
-                sendBtn.click();
-                return { success: true, sent: text.substring(0, 50), method: 'button' };
-              }
-
-              // Retry after short wait — button may enable after file processing
-              await new Promise(r => setTimeout(r, 500));
-              for (const sel of sendSelectors) {
-                sendBtn = document.querySelector(sel);
-                if (sendBtn && !sendBtn.disabled) {
-                  sendBtn.click();
-                  return { success: true, sent: text.substring(0, 50), method: 'button_retry' };
+                // Clear existing content
+                const sel = window.getSelection();
+                if (input.textContent) {
+                  sel.selectAllChildren(input);
+                  document.execCommand('delete');
+                }
+                // Insert via execCommand — triggers ProseMirror's native input handling
+                input.focus();
+                const inserted = document.execCommand('insertText', false, text);
+                if (inserted) {
+                  inputMethod = 'execCommand';
+                } else {
+                  // Fallback: clipboard paste simulation
+                  const dt = new DataTransfer();
+                  dt.setData('text/plain', text);
+                  input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+                  inputMethod = 'paste_fallback';
+                  // If paste also fails, last resort innerHTML
+                  if (!input.textContent?.includes(text.substring(0, 20))) {
+                    input.innerHTML = `<p>${text}</p>`;
+                    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+                    inputMethod = 'innerHTML_lastresort';
+                  }
                 }
               }
 
-              // Fallback: Enter key
+              await new Promise(r => setTimeout(r, 500));
+
+              // Click send button — broad selectors for regular + project chats (#15)
+              const sendSelectors = [
+                '#composer-submit-button',
+                'button[data-testid="send-button"]',
+                'button[data-testid="composer-send-button"]',
+                'button[aria-label="Send prompt"]',
+                'button[aria-label*="Send"]',
+                'button[aria-label*="ส่ง"]',
+                'form button[type="submit"]',
+                'button.composer-send',
+              ];
+              let sendBtn = null;
+              let btnSel = '';
+              for (const sel of sendSelectors) {
+                sendBtn = document.querySelector(sel);
+                if (sendBtn && !sendBtn.disabled) { btnSel = sel; break; }
+                sendBtn = null;
+              }
+
+              if (sendBtn) {
+                sendBtn.click();
+                return { success: true, sent: text.substring(0, 50), method: 'button', inputMethod, inputSel: matchedSel, btnSel };
+              }
+
+              // Retry after wait — button may enable after ProseMirror state update
+              await new Promise(r => setTimeout(r, 800));
+              for (const sel of sendSelectors) {
+                sendBtn = document.querySelector(sel);
+                if (sendBtn && !sendBtn.disabled) { btnSel = sel; break; }
+                sendBtn = null;
+              }
+              if (sendBtn) {
+                sendBtn.click();
+                return { success: true, sent: text.substring(0, 50), method: 'button_retry', inputMethod, inputSel: matchedSel, btnSel };
+              }
+
+              // Fallback: Enter key on the input
               input.dispatchEvent(new KeyboardEvent('keydown', {
-                key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
               }));
-              return { success: true, sent: text.substring(0, 50), method: 'enter' };
+              return { success: true, sent: text.substring(0, 50), method: 'enter', inputMethod, inputSel: matchedSel };
             } catch (e) {
               return { error: e.message };
             }
