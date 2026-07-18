@@ -774,12 +774,28 @@ Use double newlines between timestamps!`;
         break;
 
       case 'wait_response':
+        await chrome.tabs.update(tab.id, { active: true });
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (timeout) => {
             return new Promise((resolve) => {
               const startTime = Date.now();
-              const getResponses = () => document.querySelectorAll('MESSAGE-CONTENT, message-content, [data-message-id], .model-response-text');
+              const getResponses = () => {
+                // Fallback chain: try multiple selectors for Gemini response elements
+                // Gemini DOM restructures periodically — degrade gracefully
+                const selectors = [
+                  'message-content', 'MESSAGE-CONTENT',
+                  '.model-response-text', '.response-content',
+                  'model-response .markdown-main-panel',
+                  '[data-message-id]',
+                  '.presented-response-container .md-content'
+                ];
+                for (const sel of selectors) {
+                  const els = document.querySelectorAll(sel);
+                  if (els.length > 0) return els;
+                }
+                return document.querySelectorAll('message-content');
+              };
               const initialCount = getResponses().length;
               let lastText = '';
               let stableCount = 0;
@@ -1251,11 +1267,22 @@ Use double newlines between timestamps!`;
           result = { error: 'Not on Gemini page' };
           break;
         }
+        await chrome.tabs.update(tab.id, { active: true });
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            const all = document.querySelectorAll('MESSAGE-CONTENT, message-content');
-            if (all.length === 0) return { error: 'No responses found' };
+            const selectors = [
+              'message-content', 'MESSAGE-CONTENT',
+              '.model-response-text', '.response-content',
+              'model-response .markdown-main-panel',
+              '.presented-response-container .md-content'
+            ];
+            let all = null;
+            for (const sel of selectors) {
+              const els = document.querySelectorAll(sel);
+              if (els.length > 0) { all = els; break; }
+            }
+            if (!all || all.length === 0) return { error: 'No responses found' };
             // Get latest response (last one)
             const latest = all[all.length - 1];
             const answer = (latest.innerText || '').trim();
@@ -1279,6 +1306,7 @@ Use double newlines between timestamps!`;
           result = { error: 'Not on Gemini page' };
           break;
         }
+        await chrome.tabs.update(tab.id, { active: true });
         // newChat: navigate to /app in same tab (no new tab)
         if (command.newChat) {
           await chrome.tabs.update(tab.id, { url: 'https://gemini.google.com/app' });
