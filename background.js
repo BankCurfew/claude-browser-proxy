@@ -543,19 +543,16 @@ Use double newlines between timestamps!`;
         break;
 
       case 'get_state':
+        await chrome.tabs.update(tab.id, { active: true });
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            // Gemini State Detector
             const isLoading = () => {
-              // Only check actual progress spinner, NOT avatar animation (always visible)
               const spinner = document.querySelector('mat-mdc-progress-spinner.mdc-circular-progress--indeterminate');
               if (spinner) {
                 const rect = spinner.getBoundingClientRect();
-                // Must be in response area (not in sidebar/header)
                 if (rect.top > 100 && rect.top < window.innerHeight && rect.bottom > 0) return true;
               }
-              // Also check for streaming indicator (text being typed)
               const streaming = document.querySelector('.streaming-indicator, [data-streaming="true"]');
               if (streaming) return true;
               return false;
@@ -569,10 +566,20 @@ Use double newlines between timestamps!`;
               return null;
             };
 
+            // Fallback selector chain for response count
+            const countResponses = () => {
+              const selectors = ['message-content', 'MESSAGE-CONTENT', 'model-response', '.response-container'];
+              for (const sel of selectors) {
+                const els = document.querySelectorAll(sel);
+                if (els.length > 0) return els.length;
+              }
+              return 0;
+            };
+
             return {
               loading: isLoading(),
               tool: getActiveTool(),
-              responseCount: document.querySelectorAll('MESSAGE-CONTENT').length,
+              responseCount: countResponses(),
               timestamp: Date.now()
             };
           }
