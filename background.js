@@ -1413,6 +1413,97 @@ Use double newlines between timestamps!`;
         result = result[0]?.result || { error: 'Script returned null' };
         break;
 
+      case 'chat_and_wait': {
+        // Atomic chat + wait: captures DOM state, sends message, waits for change
+        if (!tab.url?.includes('gemini.google.com')) {
+          result = { error: 'Not on Gemini page' };
+          break;
+        }
+        await chrome.tabs.update(tab.id, { active: true });
+        const cawText = command.text || '';
+        const cawTimeout = command.timeout || 60000;
+        const cawNewChat = command.newChat || false;
+
+        if (cawNewChat) {
+          await chrome.tabs.update(tab.id, { url: 'https://gemini.google.com/app' });
+          await new Promise(resolve => {
+            const listener = (tabId, info) => {
+              if (tabId === tab.id && info.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 5000);
+          });
+          await new Promise(r => setTimeout(r, 1500));
+        }
+
+        result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: async (text, timeout) => {
+            try {
+              // 1. Capture initial state
+              const getResponses = () => {
+                const sels = ['message-content', 'MESSAGE-CONTENT', '.model-response-text', 'model-response'];
+                for (const s of sels) { const e = document.querySelectorAll(s); if (e.length > 0) return e; }
+                return document.querySelectorAll('message-content');
+              };
+              const initialCount = getResponses().length;
+              const initialText = initialCount > 0 ? (getResponses()[initialCount-1].textContent || '').trim() : '';
+
+              // 2. Type and send
+              const selectors = ['rich-textarea .ql-editor', '.ql-editor[contenteditable="true"]', '[contenteditable="true"]'];
+              let input = null;
+              for (const sel of selectors) { input = document.querySelector(sel); if (input) break; }
+              if (!input) return { error: 'Input not found' };
+              input.focus();
+              document.execCommand('selectAll');
+              document.execCommand('delete');
+              for (const char of text) {
+                input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true, cancelable: true, composed: true }));
+                document.execCommand('insertText', false, char);
+              }
+              await new Promise(r => setTimeout(r, 200));
+              const sendBtn = document.querySelector('button.send-button, button[aria-label*="Send message"]');
+              if (sendBtn && !sendBtn.disabled) sendBtn.click();
+              else input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+
+              // 3. Wait for response (content change detection)
+              return new Promise((resolve) => {
+                const startTime = Date.now();
+                let lastText = '';
+                let stableCount = 0;
+                const check = () => {
+                  const responses = getResponses();
+                  const hasNew = responses.length > initialCount;
+                  const last = responses.length > 0 ? responses[responses.length-1] : null;
+                  const currentText = last ? (last.textContent || last.innerText || '').trim() : '';
+                  if (hasNew || (currentText.length > 5 && currentText !== initialText)) {
+                    if (currentText === lastText && currentText.length > 5) {
+                      stableCount++;
+                      if (stableCount >= 3) { resolve({ answer: currentText, success: true }); return true; }
+                    } else { lastText = currentText; stableCount = 0; }
+                  }
+                  if (Date.now() - startTime > timeout) {
+                    resolve(lastText.length > 5 ? { answer: lastText, success: true } : { error: 'Timeout' });
+                    return true;
+                  }
+                  return false;
+                };
+                const iv = setInterval(() => { if (check()) clearInterval(iv); }, 500);
+              });
+            } catch (e) { return { error: e.message }; }
+          },
+          args: [cawText, cawTimeout]
+        });
+        result = result[0]?.result;
+        if (result?.answer) {
+          publish(TOPICS.answer, { answer: result.answer, timestamp: Date.now() }, true);
+        }
+        break;
+      }
+
       case 'delete_chat': {
         // Delete current conversation from Gemini sidebar
         if (!tab.url?.includes('gemini.google.com')) {
