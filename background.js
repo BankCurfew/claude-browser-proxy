@@ -804,23 +804,28 @@ Use double newlines between timestamps!`;
                 return document.querySelectorAll('message-content');
               };
               const initialCount = getResponses().length;
+              const initialText = initialCount > 0
+                ? (getResponses()[initialCount - 1].textContent || '').trim()
+                : '';
               let lastText = '';
               let stableCount = 0;
 
               const checkResponse = () => {
                 const responses = getResponses();
-                if (responses.length > initialCount) {
-                  const lastResponse = responses[responses.length - 1];
-                  const text = (lastResponse.textContent || lastResponse.innerText || '').trim();
+                const hasNewElement = responses.length > initialCount;
+                const lastResponse = responses.length > 0 ? responses[responses.length - 1] : null;
+                const currentText = lastResponse ? (lastResponse.textContent || lastResponse.innerText || '').trim() : '';
 
-                  if (text === lastText && text.length > 5) {
+                // Detect: new element added OR content changed in last element
+                if (hasNewElement || (currentText.length > 5 && currentText !== initialText)) {
+                  if (currentText === lastText && currentText.length > 5) {
                     stableCount++;
                     if (stableCount >= 3) {
-                      resolve({ answer: text, success: true });
+                      resolve({ answer: currentText, success: true });
                       return true;
                     }
                   } else {
-                    lastText = text;
+                    lastText = currentText;
                     stableCount = 0;
                   }
                 }
