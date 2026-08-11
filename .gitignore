@@ -27,3 +27,15 @@ build/
 
 # Chrome extension development
 key.pem
+*.key.json
+*token*.json
+*.pem
+*.p12
+*.pfx
+*.jks
+
+# Environment
+.env
+.env.*
+!.env.example
+!.env.sample
