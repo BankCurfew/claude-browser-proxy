@@ -546,31 +546,39 @@ Use double newlines between timestamps!`;
         await chrome.tabs.update(tab.id, { active: true });
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN',
           func: () => {
+            function deepQueryAll(root, selector) {
+              const results = Array.from(root.querySelectorAll(selector));
+              for (const el of root.querySelectorAll('*')) {
+                if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot, selector));
+              }
+              return results;
+            }
+
             const isLoading = () => {
-              const spinner = document.querySelector('mat-mdc-progress-spinner.mdc-circular-progress--indeterminate');
+              const spinner = deepQueryAll(document, 'mat-mdc-progress-spinner.mdc-circular-progress--indeterminate')[0];
               if (spinner) {
                 const rect = spinner.getBoundingClientRect();
                 if (rect.top > 100 && rect.top < window.innerHeight && rect.bottom > 0) return true;
               }
-              const streaming = document.querySelector('.streaming-indicator, [data-streaming="true"]');
+              const streaming = deepQueryAll(document, '.streaming-indicator, [data-streaming="true"]')[0];
               if (streaming) return true;
               return false;
             };
 
             const getActiveTool = () => {
-              if (document.querySelector('img.youtube-icon')) return 'youtube';
-              if (document.querySelector('img.tool-logo[src*="youtube"]')) return 'youtube';
-              if (document.querySelector('img.tool-logo[src*="search"]')) return 'search';
-              if (document.querySelector('img.tool-logo[src*="maps"]')) return 'maps';
+              if (deepQueryAll(document, 'img.youtube-icon').length) return 'youtube';
+              if (deepQueryAll(document, 'img.tool-logo[src*="youtube"]').length) return 'youtube';
+              if (deepQueryAll(document, 'img.tool-logo[src*="search"]').length) return 'search';
+              if (deepQueryAll(document, 'img.tool-logo[src*="maps"]').length) return 'maps';
               return null;
             };
 
-            // Fallback selector chain for response count
             const countResponses = () => {
               const selectors = ['message-content', 'MESSAGE-CONTENT', 'model-response', '.response-container'];
               for (const sel of selectors) {
-                const els = document.querySelectorAll(sel);
+                const els = deepQueryAll(document, sel);
                 if (els.length > 0) return els.length;
               }
               return 0;
@@ -784,12 +792,18 @@ Use double newlines between timestamps!`;
         await chrome.tabs.update(tab.id, { active: true });
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN',
           func: (timeout) => {
             return new Promise((resolve) => {
               const startTime = Date.now();
+              function deepQueryAll(root, selector) {
+                const results = Array.from(root.querySelectorAll(selector));
+                for (const el of root.querySelectorAll('*')) {
+                  if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot, selector));
+                }
+                return results;
+              }
               const getResponses = () => {
-                // Fallback chain: try multiple selectors for Gemini response elements
-                // Gemini DOM restructures periodically — degrade gracefully
                 const selectors = [
                   'message-content', 'MESSAGE-CONTENT',
                   '.model-response-text', '.response-content',
@@ -798,10 +812,10 @@ Use double newlines between timestamps!`;
                   '.presented-response-container .md-content'
                 ];
                 for (const sel of selectors) {
-                  const els = document.querySelectorAll(sel);
+                  const els = deepQueryAll(document, sel);
                   if (els.length > 0) return els;
                 }
-                return document.querySelectorAll('message-content');
+                return deepQueryAll(document, 'message-content');
               };
               const initialCount = getResponses().length;
               const initialText = initialCount > 0
@@ -860,10 +874,19 @@ Use double newlines between timestamps!`;
       case 'get_response':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          world: 'MAIN',
           func: () => {
+            function deepQueryAll(root, selector) {
+              const results = Array.from(root.querySelectorAll(selector));
+              for (const el of root.querySelectorAll('*')) {
+                if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot, selector));
+              }
+              return results;
+            }
+
             const selectors = [
-              'MESSAGE-CONTENT',     // Gemini uses uppercase custom element
-              'message-content',     // fallback lowercase
+              'MESSAGE-CONTENT',
+              'message-content',
               '[data-message-id]',
               '.model-response-text',
               '.response-container',
@@ -872,7 +895,7 @@ Use double newlines between timestamps!`;
 
             let responses = [];
             for (const sel of selectors) {
-              const els = document.querySelectorAll(sel);
+              const els = deepQueryAll(document, sel);
               if (els.length > 0) {
                 responses = els;
                 break;
@@ -880,7 +903,7 @@ Use double newlines between timestamps!`;
             }
 
             if (responses.length === 0) {
-              return { error: 'No Gemini responses found on page' };
+              return { error: 'No Gemini responses found on page', selectors: selectors.join(',') };
             }
 
             const lastResponse = responses[responses.length - 1];
