@@ -3,7 +3,7 @@
 
 importScripts('mqtt.min.js');
 
-const VERSION = '3.0.0'; // Short version for badge display
+const VERSION = chrome.runtime.getManifest().version; // T1124: was a hardcoded literal that drifted from manifest.json (badge/MQTT status showed 3.0.0 while manifest was already at 3.2.0)
 const MQTT_URL = 'ws://localhost:9001';
 
 // Map of downloadId → desired filename for renaming data URL downloads
