@@ -150,6 +150,19 @@ async function broadcastLog(type, data) {
 }
 
 // Handle commands from Claude Code
+const GEMINI_ACTIONS = new Set(['chat', 'chat_and_wait', 'wait_response', 'get_response', 'select_model', 'select_mode', 'delete_chat', 'delete_chats_bulk', 'gemini_upload']);
+async function instanceId() {                     // T2406: tell proxy instances apart on the shared broker
+  const { instanceId: id } = await chrome.storage.local.get('instanceId');
+  if (id) return id;
+  const nid = Math.random().toString(36).slice(2, 8);
+  await chrome.storage.local.set({ instanceId: nid });
+  return nid;
+}
+function platformOf(action) {                      // T2406: which AI site an action belongs to (null = either)
+  if (String(action || '').startsWith('chatgpt_')) return 'chatgpt';
+  return GEMINI_ACTIONS.has(action) ? 'gemini' : null;
+}
+
 async function handleCommand(topic, command) {
   console.log('[Claude] Command:', command);
   await broadcastLog('cmd', command);
@@ -245,7 +258,9 @@ Use double newlines between timestamps!`;
         const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
         const chatgptTabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] });
         const allAiTabs = [...geminiTabs, ...chatgptTabs];
+        if (!allAiTabs.length && !command.debug) return;                          // T2406: empty instance stays silent
         result = {
+          instance: await instanceId(), browser: (navigator.userAgentData && navigator.userAgentData.brands || []).map((b) => b.brand).filter((b) => !/Not.A.Brand/i.test(b)).join('/'),
           tabs: allAiTabs.map(t => ({
             id: t.id,
             title: t.title,
@@ -479,8 +494,8 @@ Use double newlines between timestamps!`;
     // === RESOLVE TARGET TAB ===
     if (command.tabId) {
       // Use specific tab if provided - simple and direct
-      tab = await chrome.tabs.get(command.tabId);
-      if (!tab) throw new Error('Tab not found: ' + command.tabId);
+      tab = await chrome.tabs.get(command.tabId).catch(() => null);
+      if (!tab) throw Object.assign(new Error('No tab with id: ' + command.tabId), { notMine: true });
       console.log('[Tab] Using specific tab:', command.tabId, tab.url);
       // INJECT TABID INTO PAGE FOR DEBUGGING
       await chrome.scripting.executeScript({
@@ -501,10 +516,12 @@ Use double newlines between timestamps!`;
         args: [tab.id]
       });
     } else {
-      // Find most recently active AI tab (Gemini or ChatGPT)
+      // Find most recently active AI tab. T2406: filter by the action's platform first — a chatgpt_* command used to
+      // land on a more recent Gemini tab ("Not on ChatGPT page"). command.platform ('chatgpt'|'gemini') overrides.
       const geminiTabs2 = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
       const chatgptTabs2 = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] });
-      const allTabs = [...geminiTabs2, ...chatgptTabs2];
+      const platform = command.platform || platformOf(command.action);
+      const allTabs = platform === 'chatgpt' ? chatgptTabs2 : platform === 'gemini' ? geminiTabs2 : [...geminiTabs2, ...chatgptTabs2];
       if (allTabs.length > 0) {
         allTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
         tab = allTabs[0];
@@ -514,7 +531,7 @@ Use double newlines between timestamps!`;
       }
     }
 
-    if (!tab) throw new Error('No tab found');
+    if (!tab) throw Object.assign(new Error('No tab found'), { notMine: true });
     const isAiTab = tab.url?.includes('gemini.google.com') || tab.url?.includes('chatgpt.com') || tab.url?.includes('chat.openai.com');
     if (!isAiTab) {
       throw new Error('Tab is not Gemini or ChatGPT. Please open gemini.google.com or chatgpt.com');
@@ -522,6 +539,24 @@ Use double newlines between timestamps!`;
 
     // === GEMINI TAB ACTIONS ===
     switch (command.action) {
+      case 'navigate': {
+        // T2406 one-tab rule: move THIS tab to another chat/project on the same platform; never opens a tab.
+        const target = new URL(String(command.url || ''));
+        const host = new URL(tab.url).host;
+        const sameSite = target.protocol === 'https:' && (target.host === host
+          || (/(^|\.)chatgpt\.com$|chat\.openai\.com$/.test(host) && /(^|\.)chatgpt\.com$/.test(target.host)));
+        if (!sameSite) throw new Error(`navigate: ${target.host} is not this tab's platform (${host})`);
+        await chrome.tabs.update(tab.id, { url: target.href });
+        const t0 = Date.now();
+        let cur = await chrome.tabs.get(tab.id);
+        while (Date.now() - t0 < (command.timeoutMs || 30000)) {
+          await new Promise((r) => setTimeout(r, 500));
+          cur = await chrome.tabs.get(tab.id);
+          if (cur.status === 'complete' && cur.url && !cur.url.startsWith('about:')) break;
+        }
+        publish(TOPICS.response, { id: command.id, action: 'navigate', success: cur.status === 'complete', tabId: tab.id, url: cur.url, status: cur.status });
+        return;
+      }
       case 'get_html':
         result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -2408,6 +2443,9 @@ Use double newlines between timestamps!`;
         result = { error: 'Unknown action: ' + command.action };
     }
   } catch (err) {
+    // T2406: several proxy instances share this broker (4 answered one list_tabs on 30/9). An instance that does not
+    // hold the tab stays SILENT, or its fast "No tab with id" beats the real answer (and gemini-gen then opened a tab).
+    if (err && err.notMine) { console.log('[Tab] not mine, silent:', err.message); return; }
     result = { error: err.message };
   }
 
