@@ -50,7 +50,8 @@ function loadExtension(src) {
   class ServiceWorkerGlobalScope {}
   ctx.self = Object.assign(new ServiceWorkerGlobalScope(), { WebSocket });
   vm.runInContext(readFileSync(join(ROOT, 'mqtt.min.js'), 'utf8'), ctx);
-  vm.runInContext(src.replace(/^importScripts\(.*$/m, '').replace(`'ws://localhost:9001'`, `'ws://localhost:${PORT}'`), ctx);
+  vm.runInContext(readFileSync(join(ROOT, 'guard.js'), 'utf8'), ctx);   // T2906: background.js importScripts('guard.js')
+  vm.runInContext(src.replace(/^importScripts\(.*$/gm, '').replace(`'ws://localhost:9001'`, `'ws://localhost:${PORT}'`), ctx);
   return { fireAlarm: () => alarm({ name: 'mqtt-keepalive' }), run: (code) => vm.runInContext(code, ctx) };
 }
 
