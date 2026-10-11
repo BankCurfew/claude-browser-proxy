@@ -2,6 +2,7 @@
 // Uses MQTT.js library for WebSocket connection to Mosquitto broker
 
 importScripts('mqtt.min.js');
+importScripts('guard.js');   // T2906 S2-C: isAiUrl / isImageHost / cookiesAllowed / brokerOptions
 
 const VERSION = chrome.runtime.getManifest().version; // T1124: was a hardcoded literal that drifted from manifest.json (badge/MQTT status showed 3.0.0 while manifest was already at 3.2.0)
 const MQTT_URL = 'ws://localhost:9001';
@@ -48,14 +49,33 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// T2906 S2-C (A2): broker credentials from chrome.storage.local (mqttUsername/mqttPassword), else the gitignored
+// broker-creds.json next to the manifest. Loaded once per worker (and on storage change); connect() waits for it.
+let brokerAuth = null, brokerAuthPending = null;
+function loadBrokerAuth() {
+  brokerAuthPending = brokerOptions(
+    (keys) => chrome.storage.local.get(keys),
+    () => fetch(chrome.runtime.getURL('broker-creds.json')).then((r) => (r.ok ? r.json() : null)),
+  ).then((o) => { brokerAuth = o; console.log('[MQTT] credentials:', o.source); return o; });
+  return brokerAuthPending;
+}
+chrome.storage.onChanged?.addListener((ch, area) => {
+  if (area === 'local' && (ch.mqttUsername || ch.mqttPassword)) loadBrokerAuth().then(() => connect());
+});
+
 // Connect to MQTT broker with LWT
 function connect() {
+  if (!brokerAuth) {           // first connect of this worker: wait for the credentials once, never stack a second call
+    if (!brokerAuthPending) loadBrokerAuth().then(() => connect());
+    return;
+  }
   console.log('[MQTT] Connecting to', MQTT_URL);
   // T2890: one client per worker. Close the old one (and its auto-reconnect) before making a new one.
   if (client) { try { client.removeAllListeners(); client.end(true); } catch (e) { /* already closed */ } client = null; }
 
   client = mqtt.connect(MQTT_URL, {
     clientId: 'claude-browser-' + Date.now(),
+    ...(brokerAuth.username ? { username: brokerAuth.username, password: brokerAuth.password } : {}),
     keepalive: 15, // 15 seconds - LWT triggers after ~22 sec if no ping
     reconnectPeriod: 5000, // Reconnect every 5 seconds
     will: {
@@ -168,6 +188,18 @@ function platformOf(action) {                      // T2406: which AI site an ac
   return GEMINI_ACTIONS.has(action) ? 'gemini' : null;
 }
 
+// T2906 S2-C: a tab id from the broker is only used when that tab is on an AI host
+async function aiTabOrThrow(tabId) {
+  const t = await chrome.tabs.get(tabId).catch(() => null);
+  if (!t) throw Object.assign(new Error('No tab with id: ' + tabId), { notMine: true });
+  if (!isAiUrl(t.url || t.pendingUrl)) throw new Error('refused: tab ' + tabId + ' is not Gemini or ChatGPT (T2906)');
+  return t;
+}
+function aiUrlOrThrow(url) {
+  if (!isAiUrl(url)) throw new Error('refused: only gemini.google.com / chatgpt.com URLs may be opened (T2906)');
+  return url;
+}
+
 async function handleCommand(topic, command) {
   console.log('[Claude] Command:', command);
   await broadcastLog('cmd', command);
@@ -246,7 +278,7 @@ Use double newlines between timestamps!`;
       case 'create_tab': {
         // Create new Gemini tab and return its ID
         const createdTab = await chrome.tabs.create({
-          url: command.url || 'https://gemini.google.com/app',
+          url: aiUrlOrThrow(command.url || 'https://gemini.google.com/app'),
           active: command.active !== false  // default: make active
         });
         result = {
@@ -282,7 +314,7 @@ Use double newlines between timestamps!`;
 
       case 'new_tab': {
         // Create a new Gemini tab
-        const url = command.url || 'https://gemini.google.com/app';
+        const url = aiUrlOrThrow(command.url || 'https://gemini.google.com/app');
         const tab = await chrome.tabs.create({ url, active: true });
         result = {
           success: true,
@@ -297,6 +329,7 @@ Use double newlines between timestamps!`;
       case 'focus_tab':
         // Focus a specific tab
         if (!command.tabId) throw new Error('tabId required for focus_tab');
+        await aiTabOrThrow(command.tabId);
         await chrome.tabs.update(command.tabId, { active: true });
         const focusedTab = await chrome.tabs.get(command.tabId);
         await chrome.windows.update(focusedTab.windowId, { focused: true });
@@ -306,6 +339,7 @@ Use double newlines between timestamps!`;
 
       case 'close_tab': {
         if (!command.tabId) throw new Error('tabId required for close_tab');
+        await aiTabOrThrow(command.tabId);
         await chrome.tabs.remove(command.tabId);
         result = { success: true, tabId: command.tabId, closed: true };
         publish(TOPICS.response, { ...result, id: command.id, action: command.action });
@@ -315,6 +349,7 @@ Use double newlines between timestamps!`;
       case 'inject_badge':
         // DEBUG: Inject badge into specific tab
         if (!command.tabId) throw new Error('tabId required');
+        await aiTabOrThrow(command.tabId);
         await chrome.scripting.executeScript({
           target: { tabId: command.tabId },
           func: (id, msg) => {
@@ -336,6 +371,7 @@ Use double newlines between timestamps!`;
       case 'inject_response_actions':
         // Inject custom buttons after the last button in each response
         if (!command.tabId) throw new Error('tabId required');
+        await aiTabOrThrow(command.tabId);
         result = await chrome.scripting.executeScript({
           target: { tabId: command.tabId },
           func: (actions) => {
@@ -404,6 +440,7 @@ Use double newlines between timestamps!`;
       case 'auto_inject_start':
         // Start auto-injection loop using MutationObserver
         if (!command.tabId) throw new Error('tabId required');
+        await aiTabOrThrow(command.tabId);
         result = await chrome.scripting.executeScript({
           target: { tabId: command.tabId },
           func: (actions) => {
@@ -480,6 +517,7 @@ Use double newlines between timestamps!`;
       case 'auto_inject_stop':
         // Stop auto-injection
         if (!command.tabId) throw new Error('tabId required');
+        await aiTabOrThrow(command.tabId);
         result = await chrome.scripting.executeScript({
           target: { tabId: command.tabId },
           func: () => {
@@ -501,6 +539,7 @@ Use double newlines between timestamps!`;
       // Use specific tab if provided - simple and direct
       tab = await chrome.tabs.get(command.tabId).catch(() => null);
       if (!tab) throw Object.assign(new Error('No tab with id: ' + command.tabId), { notMine: true });
+      if (!isAiUrl(tab.url || tab.pendingUrl)) throw new Error('refused: tab ' + command.tabId + ' is not Gemini or ChatGPT (T2906)');   // before the badge script
       console.log('[Tab] Using specific tab:', command.tabId, tab.url);
       // INJECT TABID INTO PAGE FOR DEBUGGING
       await chrome.scripting.executeScript({
@@ -537,7 +576,7 @@ Use double newlines between timestamps!`;
     }
 
     if (!tab) throw Object.assign(new Error('No tab found'), { notMine: true });
-    const isAiTab = tab.url?.includes('gemini.google.com') || tab.url?.includes('chatgpt.com') || tab.url?.includes('chat.openai.com');
+    const isAiTab = isAiUrl(tab.url);   // T2906: exact host, not a substring of the whole URL
     if (!isAiTab) {
       throw new Error('Tab is not Gemini or ChatGPT. Please open gemini.google.com or chatgpt.com');
     }
@@ -1163,9 +1202,10 @@ Use double newlines between timestamps!`;
               continue;
             }
 
-            // Fetch image from background with cookies
+            // Fetch image from background with cookies. T2906: only from AI hosts / image CDNs; Google cookies only to googleusercontent
+            if (!isImageHost(item.src)) { console.log(`[download_images] refused non-image host (T2906): ${item.src.substring(0, 60)}`); continue; }
             const fetchOpts = {};
-            if (cookieHeader) {
+            if (cookieHeader && cookiesAllowed(item.src)) {
               fetchOpts.headers = { 'Cookie': cookieHeader };
             }
             const resp = await fetch(item.src, fetchOpts);
@@ -1207,20 +1247,8 @@ Use double newlines between timestamps!`;
         break;
       }
 
-      case 'execute':
-        result = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (code) => {
-            try {
-              return eval(code);
-            } catch (e) {
-              return { error: e.message };
-            }
-          },
-          args: [command.code]
-        });
-        result = result[0]?.result;
-        break;
+      // T2906 C-R1: no 'execute' action. Running caller-supplied code in an AI tab made every broker client a code-exec
+      // client; an unknown action falls through to default and returns an error.
 
       case 'select_model':
         result = await chrome.scripting.executeScript({
@@ -2150,8 +2178,10 @@ Use double newlines between timestamps!`;
               cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
             } catch (e) {}
 
+            // T2906: only AI hosts / image CDNs; ChatGPT cookies only to chatgpt.com / oaiusercontent
+            if (!isImageHost(item.src)) { console.log(`[chatgpt_download] refused non-image host (T2906): ${item.src.substring(0, 60)}`); continue; }
             const fetchOpts = {};
-            if (cookieHeader) fetchOpts.headers = { 'Cookie': cookieHeader };
+            if (cookieHeader && chatgptCookiesAllowed(item.src)) fetchOpts.headers = { 'Cookie': cookieHeader };
 
             const resp = await fetch(item.src, fetchOpts);
             const ct = resp.headers.get('content-type') || '';

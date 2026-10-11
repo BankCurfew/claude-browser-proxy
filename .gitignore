@@ -39,3 +39,6 @@ key.pem
 .env.*
 !.env.example
 !.env.sample
+
+# T2906: broker credentials for the extension (admin writes it at cutover; never committed)
+broker-creds.json

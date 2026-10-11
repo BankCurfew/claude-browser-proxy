@@ -16,7 +16,6 @@ Claude Code CLI  <-->  MQTT Broker (Mosquitto)  <-->  Chrome Extension  <-->  Br
 - Interact with Gemini AI through your existing session
 - Control browser tabs programmatically
 - Capture screenshots
-- Execute JavaScript in page context
 
 **Claude Browser Proxy** ช่วยให้ Claude Code (CLI) ควบคุม browser ผ่าน MQTT ทำให้สามารถ:
 
@@ -58,7 +57,6 @@ Claude Code CLI  <-->  MQTT Broker (Mosquitto)  <-->  Chrome Extension  <-->  Br
 ### Utilities | เครื่องมือเสริม
 - `screenshot` - Capture visible tab
 - `download` - Download file from URL
-- `execute` - Run arbitrary JavaScript
 - `get_state` - Check if Gemini is loading/responding
 
 ## Installation | การติดตั้ง
@@ -218,7 +216,6 @@ chmod +x claude-browser.sh
 |--------|-------------|------------|
 | `screenshot` | Capture tab | - |
 | `download` | Download file | `url`, `filename` (optional) |
-| `execute` | Run JavaScript | `code` |
 
 ### Tab Targeting
 
