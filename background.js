@@ -38,7 +38,10 @@ const KEEPALIVE_ALARM = 'mqtt-keepalive';
 chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
-    if (!isConnected) {
+    // T2890: mqtt.js already auto-reconnects its client (reconnectPeriod); a second connect() here while it does
+    // used to add a client every 30 s (Chrome :9222 held 10 on 11 Oct → 5 late duplicate replies per list_tabs).
+    // Only a missing client, or one mqtt.js has given up on, gets replaced.
+    if (!isConnected && (!client || (!client.connected && !client.reconnecting))) {
       console.log('[keepalive] MQTT disconnected — reconnecting...');
       connect();
     }
@@ -48,6 +51,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Connect to MQTT broker with LWT
 function connect() {
   console.log('[MQTT] Connecting to', MQTT_URL);
+  // T2890: one client per worker. Close the old one (and its auto-reconnect) before making a new one.
+  if (client) { try { client.removeAllListeners(); client.end(true); } catch (e) { /* already closed */ } client = null; }
 
   client = mqtt.connect(MQTT_URL, {
     clientId: 'claude-browser-' + Date.now(),
