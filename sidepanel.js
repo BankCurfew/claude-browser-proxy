@@ -14,7 +14,7 @@ function formatMsg(msg) {
   const actionIcons = {
     'get_url': '🔗', 'get_text': '📄', 'get_html': '🌐', 'get_videos': '🎬',
     'get_state': '📊', 'get_response': '📥', 'screenshot': '📸', 'click': '👆',
-    'type': '⌨️', 'key': '⌨️', 'find': '🔍', 'execute': '⚡', 'download': '💾',
+    'type': '⌨️', 'key': '⌨️', 'find': '🔍', 'download': '💾',
     'select_model': '🤖', 'wait_response': '⏳', 'publish': '📤'
   };
 
@@ -134,15 +134,12 @@ async function sendChat(text) {
   await chrome.runtime.sendMessage({ action: 'command', command: { action: 'wait_response', timeout: 30000, id: 'chat_wait' } });
 }
 
-// Run input (chat, JS, or selector)
+// Run input (chat, type, or selector)
 $('run').onclick = () => {
   const val = $('inp').value.trim();
   if (!val) return;
   $('inp').value = ''; // Clear input
-  if (val.startsWith('js:')) {
-    // Execute JS
-    cmd('execute', { code: val.slice(3) });
-  } else if (val.startsWith('type:')) {
+  if (val.startsWith('type:')) {   // T2906 C-R1: the 'js:' (execute) input is gone
     // Type text: "type:selector|text"
     const [sel, text] = val.slice(5).split('|');
     cmd('type', { selector: sel, text: text });

@@ -1247,20 +1247,8 @@ Use double newlines between timestamps!`;
         break;
       }
 
-      case 'execute':
-        result = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (code) => {
-            try {
-              return eval(code);
-            } catch (e) {
-              return { error: e.message };
-            }
-          },
-          args: [command.code]
-        });
-        result = result[0]?.result;
-        break;
+      // T2906 C-R1: no 'execute' action. Running caller-supplied code in an AI tab made every broker client a code-exec
+      // client; an unknown action falls through to default and returns an error.
 
       case 'select_model':
         result = await chrome.scripting.executeScript({
